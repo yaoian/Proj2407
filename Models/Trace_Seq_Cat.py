@@ -2,14 +2,6 @@ from Models.Basics import *
 from Models.StateProp import GRU_Conv
 from math import sqrt, ceil
 
-
-def  crossAttn(x, s):
-        # x: (B, C, L)
-        # s: (B, C, L)
-        attn = torch.softmax(torch.bmm(s.transpose(-1, -2), x), dim=1)  # (B, L, L)
-        return x + torch.bmm(s, attn)   # (B, C, L)
-
-
 class ResBlock(nn.Module):
     def __init__(self,
                  in_c: int,
@@ -136,7 +128,7 @@ class UNetStage(nn.Module):
         return self.out_proj(x)
 
 
-class TrajWeaverUNet(nn.Module):
+class TraceUNet(nn.Module):
     def __init__(self,
                  in_c: int,
                  out_c: int,
@@ -179,6 +171,7 @@ class TrajWeaverUNet(nn.Module):
 
         # Create Encoder (Down sampling) Blocks for UNet
         in_channels = c_list[:-1]
+        in_channels[0] *= 2
         out_channels = c_list[1:]
         self.down_blocks = nn.ModuleList()
         for i in range(self.stages):
@@ -193,11 +186,13 @@ class TrajWeaverUNet(nn.Module):
         # reverse the channel schedule
         in_channels = c_list[-1:0:-1]
         out_channels = c_list[-2::-1]
+        out_channels[-1] *= 2
         for i in range(self.stages):
             self.up_blocks.append(
                 UNetStage(in_channels[i] * 2, out_channels[i], embed_c, blocks[-i], expend, upsample=True))
 
-        self.head = nn.Conv1d(c_list[0], out_c, 3, 1, 1)
+        self.head = nn.Conv1d(c_list[0] * 2, out_c, 3, 1, 1)
+        self.state_head = nn.Conv1d(c_list[0] * 2, c_list[0], 3, 1, 1)
 
 
     def forward(self,
@@ -215,39 +210,29 @@ class TrajWeaverUNet(nn.Module):
         # Embeddings
         lengths = torch.sum(x[:, 5] > -0.5, dim=1)
         mix_embed = (self.time_embedder(diffusion_t) + self.length_embedder(lengths)).unsqueeze(-1)
-        x = self.pre_embed(x)
-        s_id = 0
+        x = torch.cat([self.pre_embed(x), s_list[0]], dim=1)  # (B, C, L)
 
         # Encoder
-        x = crossAttn(x, s_list[s_id])
-        s_id += 1
         down_states = [x]
         for di, down_stage in enumerate(self.down_blocks):
             x = down_stage(x, mix_embed)
-            x = crossAttn(x, s_list[s_id])  # (B, C, L) -> (B, C', L//2)
-            s_id += 1
             down_states.append(x)
 
         # Middle Attention Block
         x = self.mid_attn_block(x, mix_embed)  # (B, C', L//2**i)
 
         # Decoder
-        x = crossAttn(x, s_list[s_id])
-        s_id += 1
-        up_states = [x]
         for i, up_stage in enumerate(self.up_blocks):
             # fuse with skip connection
             x = torch.cat([x, down_states[-i - 1]], dim=1)  # (B, C*2, L//2**i)
             x = up_stage(x, mix_embed)  # (B, C', L//2**i)
-            x = crossAttn(x, s_list[s_id])
-            s_id += 1
-            up_states.append(x)
 
-        return self.head(up_states[-1]), down_states + up_states
+
+        return self.head(x), [self.state_head(x)]
 
     def getStateShapes(self, traj_len):
-        shapes = [(self.c_list[i], ceil(traj_len / (2 ** i))) for i in range(len(self.c_list))]
-        return shapes + shapes[::-1]
+        shapes = [(self.c_list[0], traj_len)]
+        return shapes
 
     def getFeatureShapes(self, traj_len):
         return self.getStateShapes(traj_len)
@@ -269,11 +254,11 @@ class Linkage(nn.Module):
 
 
 if __name__ == "__main__":
-    model = TrajWeaverUNet(
+    model = TraceUNet(
         in_c=6,  # input trajectory encoding channels
         out_c=2,
         diffusion_steps=500,  # maximum diffusion steps
-        c_list=[128, 128, 128, 256],  # channel schedule of stages, first element is stem output channels
+        c_list=[64, 128, 128, 256],  # channel schedule of stages, first element is stem output channels
         blocks=["RRRR", "RRRR", "RRRR"],  # number of resblocks in each stage
         embed_c=64,  # channels of mix embeddings
         expend=4,  # number of heads for attention

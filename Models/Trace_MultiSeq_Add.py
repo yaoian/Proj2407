@@ -129,7 +129,7 @@ class UNetStage(nn.Module):
         return self.out_proj(x)
 
 
-class TrajWeaverUNet(nn.Module):
+class TraceUNet(nn.Module):
     def __init__(self,
                  in_c: int,
                  out_c: int,
@@ -261,7 +261,7 @@ class Linkage(nn.Module):
 
 
 if __name__ == "__main__":
-    model = TrajWeaverUNet(
+    model = TraceUNet(
         in_c=6,  # input trajectory encoding channels
         out_c=2,
         diffusion_steps=500,  # maximum diffusion steps

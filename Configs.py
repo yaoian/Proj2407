@@ -41,11 +41,11 @@ diffusion_args = {
 
 ### Diffusion Configs -+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 
-model_name = "TW_MultiSeq_Add"
-# model_name = "TW_MultiSeq_Cat"
-# model_name = "TW_MultiSeq_CA"
-# model_name = "TW_SingleSeq"
-# model_name = "TW_MultiVec"
+model_name = "Trace_MultiSeq_Add"
+# model_name = "Trace_MultiSeq_Cat"
+# model_name = "Trace_MultiSeq_CA"
+# model_name = "Trace_SingleSeq"
+# model_name = "Trace_MultiVec"
 
 embed_dim = 6
 
@@ -69,10 +69,10 @@ else:
 
 actual_diff_step = T // diffusion_args["skip_step"] + 1
 
-if model_name == "TW_MultiSeq_Add":
-    from Models import TW_MultiSeq_Add as TrajWeaver
-    from Models import TW_MultiSeq_Add_Linkage as Linkage
-    TW_args = {
+if model_name == "Trace_MultiSeq_Add":
+    from Models import Trace_MultiSeq_Add as Trace
+    from Models import Trace_MultiSeq_Add_Linkage as Linkage
+    Trace_args = {
         "in_c": 6 + embed_dim,  # input trajectory encoding channels
         "out_c": 2,
         "diffusion_steps": T,  # maximum diffusion steps
@@ -86,10 +86,10 @@ if model_name == "TW_MultiSeq_Add":
     link_args = {
         "max_t": T
     }
-elif model_name == "TW_MultiSeq_Cat":
-    from Models import TW_MultiSeq_Cat as TrajWeaver
-    from Models import TW_MultiSeq_Cat_Linkage as Linkage
-    TW_args = {
+elif model_name == "Trace_MultiSeq_Cat":
+    from Models import Trace_MultiSeq_Cat as Trace
+    from Models import Trace_MultiSeq_Cat_Linkage as Linkage
+    Trace_args = {
         "in_c": 6 + embed_dim,  # input trajectory encoding channels
         "out_c": 2,
         "state_c": 32,
@@ -105,10 +105,10 @@ elif model_name == "TW_MultiSeq_Cat":
         "state_c": 32,
         "max_t": T
     }
-elif model_name == "TW_MultiSeq_CA":
-    from Models import TW_MultiSeq_CA as TrajWeaver
-    from Models import TW_MultiSeq_CA_Linkage as Linkage
-    TW_args = {
+elif model_name == "Trace_MultiSeq_CA":
+    from Models import Trace_MultiSeq_CA as Trace
+    from Models import Trace_MultiSeq_CA_Linkage as Linkage
+    Trace_args = {
         "in_c": 6 + embed_dim,  # input trajectory encoding channels
         "out_c": 2,
         "diffusion_steps": T,  # maximum diffusion steps
@@ -122,10 +122,10 @@ elif model_name == "TW_MultiSeq_CA":
     link_args = {
         "max_t": T
     }
-elif model_name == "TW_MultiVec_Add":
-    from Models import TW_MultiVec_Add as TrajWeaver
-    from Models import TW_MultiVec_Add_Linkage as Linkage
-    TW_args = {
+elif model_name == "Trace_MultiVec_Add":
+    from Models import Trace_MultiVec_Add as Trace
+    from Models import Trace_MultiVec_Add_Linkage as Linkage
+    Trace_args = {
         "in_c": 6 + embed_dim,  # input trajectory encoding channels
         "out_c": 2,
         "diffusion_steps": T,  # maximum diffusion steps
@@ -139,10 +139,10 @@ elif model_name == "TW_MultiVec_Add":
     link_args = {
         "max_t": T
     }
-elif model_name == "TW_SingleSeq":
-    from Models import TW_Seq_Cat as TrajWeaver
-    from Models import TW_Seq_Cat_Linkage as Linkage
-    TW_args = {
+elif model_name == "Trace_SingleSeq":
+    from Models import Trace_Seq_Cat as Trace
+    from Models import Trace_Seq_Cat_Linkage as Linkage
+    Trace_args = {
         "in_c": 6 + embed_dim,  # input trajectory encoding channels
         "out_c": 2,
         "diffusion_steps": T,  # maximum diffusion steps

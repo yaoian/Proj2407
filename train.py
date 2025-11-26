@@ -1,4 +1,4 @@
-# TrajWeaver
+# TRACE
 from DDM import DDIM
 from BatchManagers import ThreadedScheduler
 
@@ -31,7 +31,7 @@ def train():
         dataset = TaxiDataset(**dataset_args)
 
     # --- Model and Diffusion Configs ---
-    unet = TrajWeaver(**TW_args).cuda().train()
+    unet = Trace(**Trace_args).cuda().train()
     linkage = Linkage(unet.getStateShapes(TRAJ_LEN), **link_args).cuda().train()
     embedder = Embedder(embed_dim).cuda().train() if dataset_name == "apartments" else None
     # loadModel("Runs/2024-07-15_05-26-26/last.pth", unet=unet, linkage=linkage, embedder=embedder)
