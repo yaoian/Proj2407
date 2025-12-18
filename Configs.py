@@ -55,17 +55,21 @@ log_dir = f"./Runs/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}/"
 save_dir = log_dir
 
 if dataset_name == "apartments":
-    from BatchManagers import ApartmentsBatchManager as BatchManager
     dataset_args = {
         "max_len": TRAJ_LEN,
         "load_path": "./Dataset/apartment_dataset.pth",
     }
 else:
-    from BatchManagers import TaxiBatchManager as BatchManager
     dataset_args = {
         "max_len": TRAJ_LEN,
         "load_path": f"./Dataset/{dataset_name}_nov_cache.pth",
     }
+
+def get_batch_manager_class():
+    from BatchManagers import ApartmentsBatchManager, TaxiBatchManager
+    if dataset_name == "apartments":
+        return ApartmentsBatchManager
+    return TaxiBatchManager
 
 actual_diff_step = T // diffusion_args["skip_step"] + 1
 

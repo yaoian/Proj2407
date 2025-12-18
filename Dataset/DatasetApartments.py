@@ -3,10 +3,12 @@ from torch.utils.data import Dataset
 from typing import *
 import random
 
+from device_utils import get_default_device
+
 Tensor = torch.Tensor
 
 class DatasetApartments(Dataset):
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = get_default_device()
     def __init__(self, max_len: int, load_path: str, centering: bool = False):
         """
         The dataset collected in apartment areas in last-mile delivery

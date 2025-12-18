@@ -1,11 +1,10 @@
 import torch.nn.functional as func
-from typing import *
+from typing import List, Literal, Union
 import numpy as np
 from rich import print as rprint
 import random
 
-
-from Configs import *
+import torch
 
 
 class BatchManager():
@@ -224,5 +223,4 @@ class BatchManager():
         trajs[self.T] = traj
 
         return trajs, mask, comb_noises
-
 

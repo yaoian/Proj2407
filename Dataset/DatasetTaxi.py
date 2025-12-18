@@ -4,9 +4,11 @@ from typing import *
 import random
 from rich.status import Status
 
+from device_utils import get_default_device
+
 class TaxiDataset(data.Dataset):
 
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    device = get_default_device()
 
 
     def __init__(self, max_len: int, load_path: str):
