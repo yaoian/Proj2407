@@ -54,6 +54,9 @@ embed_dim = 6
 log_dir = f"./Runs/{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}/"
 save_dir = log_dir
 
+# Resume training (set to a .pth path or None)
+resume_checkpoint = None
+
 if dataset_name == "apartments":
     dataset_args = {
         "max_len": TRAJ_LEN,

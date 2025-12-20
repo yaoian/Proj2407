@@ -35,7 +35,13 @@ def train():
     unet = Trace(**Trace_args).to(device).train()
     linkage = Linkage(unet.getStateShapes(TRAJ_LEN), **link_args).to(device).train()
     embedder = Embedder(embed_dim).to(device).train() if dataset_name == "apartments" else None
-    # loadModel("Runs/2024-07-15_05-26-26/last.pth", unet=unet, linkage=linkage, embedder=embedder)
+    if resume_checkpoint:
+        if not os.path.isfile(resume_checkpoint):
+            raise FileNotFoundError(f"Resume checkpoint not found: {resume_checkpoint}")
+        resume_models = {"unet": unet, "linkage": linkage}
+        if embedder is not None:
+            resume_models["embedder"] = embedder
+        loadModel(resume_checkpoint, **resume_models)
     diff_manager = DDIM(**diffusion_args, device=device)
 
     # --- Loss function and optimizer ---
@@ -158,4 +164,3 @@ def train():
 
 if __name__ == "__main__":
     train()
-
