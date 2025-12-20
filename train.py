@@ -30,6 +30,7 @@ def train():
         dataset = ApartmentsDataset(**dataset_args)
     else:
         dataset = TaxiDataset(**dataset_args)
+    steps_per_epoch = max(1, len(dataset) - 2 * batch_size)
 
     # --- Model and Diffusion Configs ---
     unet = Trace(**Trace_args).to(device).train()
@@ -62,11 +63,16 @@ def train():
     mov_avg_loss = MovingAverage(mov_avg_interval)
     os.makedirs(save_dir)
     writer = SummaryWriter(log_dir)
+    info_path = os.path.join(log_dir, "info.txt")
 
-    with open(log_dir + "info.txt", "w") as file:
+    with open(info_path, "w") as file:
         file.write(f"Training {unet.__class__.__name__} on 20240711 dataset\n")
         file.write("Model:\n")
         file.write(str(unet))
+
+    def append_info(line: str) -> None:
+        with open(info_path, "a") as file:
+            file.write(line + "\n")
 
     batch_manager_class = get_batch_manager_class()
     batch_manager = batch_manager_class(
@@ -99,6 +105,8 @@ def train():
         pbar = tqdm(data_iterator, desc="Training", ncols=100)
         for global_it, batch_data in enumerate(pbar):
             optimizer.zero_grad()
+            epoch = global_it // steps_per_epoch + 1
+            iter_in_epoch = global_it % steps_per_epoch + 1
 
             if dataset_name == "apartments":
                 t, tp1, x_t, x_tp1, x_T, eps_0_to_t, eps_0_to_tp1, masks, loc_mean, meta, s_tp1 = batch_data
@@ -136,15 +144,33 @@ def train():
             mov_avg_loss << loss_float
 
             if global_it % 10 == 0:
-                pbar.set_postfix_str(f"loss={float(mov_avg_loss):.7f} | lr={optimizer.param_groups[0]['lr']:.4e}")
+                pbar.set_postfix_str(
+                    f"epoch={epoch}/{epochs} iter={iter_in_epoch}/{steps_per_epoch} "
+                    f"loss={float(mov_avg_loss):.7f} | lr={optimizer.param_groups[0]['lr']:.4e}"
+                )
 
             if global_it % log_interval == 0:
                 writer.add_scalar("Loss", float(mov_avg_loss), global_it)
                 writer.add_scalar("LR", optimizer.param_groups[0]['lr'], global_it)
 
+            if progress_log_interval > 0 and global_it % progress_log_interval == 0:
+                append_info(
+                    f"iter={global_it} epoch={epoch}/{epochs} "
+                    f"iter_in_epoch={iter_in_epoch}/{steps_per_epoch} "
+                    f"loss={float(mov_avg_loss):.7f} lr={optimizer.param_groups[0]['lr']:.4e}"
+                )
+
             if global_it % 500 == 0:
                 saveModel(save_dir + "last.pth", unet=unet, linkage=linkage, embedder=embedder)
                 lr_scheduler.step(float(mov_avg_loss))
+
+            if save_ckpt_interval > 0 and global_it % save_ckpt_interval == 0 and global_it > 0:
+                saveModel(
+                    save_dir + f"ckpt_e{epoch}_i{iter_in_epoch}_g{global_it}.pth",
+                    unet=unet,
+                    linkage=linkage,
+                    embedder=embedder
+                )
 
             if global_it % 1000 == 0:
                 try:

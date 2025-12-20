@@ -24,6 +24,9 @@ batch_size = 50
 epochs = 1000
 log_interval = 10
 mov_avg_interval = 15 * T
+# set to 0 to disable periodic logging/checkpoints
+save_ckpt_interval = 1000
+progress_log_interval = 1000
 
 ### Dataset Configs -+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 dataset_name = "apartments"

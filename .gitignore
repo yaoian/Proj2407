@@ -166,5 +166,9 @@ Dataset/*_nov_cache.pth
 Dataset/apartment_dataset.pth
 # serena
 .serena/
+# reading
+tools/
+# output
+output/
 
 Runs
