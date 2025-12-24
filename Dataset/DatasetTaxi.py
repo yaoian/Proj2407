@@ -8,14 +8,13 @@ from device_utils import get_default_device
 
 class TaxiDataset(data.Dataset):
 
-    device = get_default_device()
-
-
     def __init__(self, max_len: int, load_path: str):
+        self.device = get_default_device()
 
         with Status(f'Loading {load_path} from disk...'):
-            dataset_part = torch.load(load_path)
-            self.trajs = [sample[0].to(self.device) for sample in dataset_part]
+            dataset_part = torch.load(load_path, map_location="cpu")
+            # Keep trajectories on CPU to avoid OOM for large datasets; move to device in __getitem__.
+            self.trajs = [sample[0].to(torch.float32) for sample in dataset_part]
 
         self.max_length = max_len
         self.sample_length = max_len
@@ -89,26 +88,35 @@ class TaxiDataset(data.Dataset):
         :param index: The index of the trajectory in dataset_part
         :return: lon_lat: (2, N), attr: (3,), times: (N,)
         """
-        # lon_lat: (N, 3), times: (N,)
         traj = self.trajs[index]
-        sample_start = random.randint(0, self.max_length - self.sample_length)
+        max_start = max(0, traj.shape[1] - self.sample_length)
+        sample_start = random.randint(0, max_start)
         traj = traj[:, sample_start:sample_start + self.sample_length].to(self.device)
 
-        n_remain = self.sample_length - int(self.sample_length * self.erase_rate)
+        actual_sample_length = traj.shape[1]
+        if actual_sample_length < 2:
+            raise ValueError(f"Trajectory too short: len={actual_sample_length}")
+
+        n_remain = actual_sample_length - int(actual_sample_length * self.erase_rate)
         # select n_remain indices to remain, sorted, and exclude the first and last point
-        remain_indices = torch.randperm(self.sample_length - 2)[:n_remain - 2].to(self.device) + 1
+        remain_indices = torch.randperm(actual_sample_length - 2)[:n_remain - 2].to(self.device) + 1
         remain_indices = torch.sort(remain_indices)[0]
         # add firsst and the last point
-        remain_indices = torch.cat([torch.tensor([0], device=self.device), remain_indices,
-                                    torch.tensor([self.sample_length - 1], device=self.device)])
+        remain_indices = torch.cat(
+            [
+                torch.tensor([0], device=self.device),
+                remain_indices,
+                torch.tensor([actual_sample_length - 1], device=self.device),
+            ]
+        )
 
         # binary_mask is 0 means the broken traj, 1 means erased
-        mask = torch.ones(self.sample_length, dtype=torch.float32, device=self.device)
+        mask = torch.ones(actual_sample_length, dtype=torch.float32, device=self.device)
         mask[remain_indices] = 0
 
         loc_guess = self.guessTraj(traj, mask)
 
-        pad_size = self.max_length - self.sample_length
+        pad_size = self.max_length - actual_sample_length
         mask = torch.nn.functional.pad(mask, (0, pad_size), mode="constant", value=-1)
         traj = torch.nn.functional.pad(traj, (0, pad_size))
         loc_guess = torch.nn.functional.pad(loc_guess, (0, pad_size))
