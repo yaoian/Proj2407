@@ -160,19 +160,22 @@ def train():
                     f"loss={float(mov_avg_loss):.7f} lr={optimizer.param_groups[0]['lr']:.4e}"
                 )
 
-            if global_it % 500 == 0:
-                saveModel(save_dir + "last.pth", unet=unet, linkage=linkage, embedder=embedder)
+            # Skip the very first iteration to avoid long I/O pauses at startup.
+            if global_it > 0 and global_it % 500 == 0:
+                saveModel(save_dir + "last.pth", async_write=True, unet=unet, linkage=linkage, embedder=embedder)
                 lr_scheduler.step(float(mov_avg_loss))
 
             if save_ckpt_interval > 0 and global_it % save_ckpt_interval == 0 and global_it > 0:
                 saveModel(
                     save_dir + f"ckpt_e{epoch}_i{iter_in_epoch}_g{global_it}.pth",
+                    async_write=True,
                     unet=unet,
                     linkage=linkage,
                     embedder=embedder
                 )
 
-            if global_it % 1000 == 0:
+            # Skip the very first iteration to avoid heavy recovery eval right at startup.
+            if global_it > 0 and global_it % 1000 == 0:
                 try:
                     from eval import recovery
                 except ModuleNotFoundError as e:
@@ -180,13 +183,20 @@ def train():
                     recovery = None
 
                 if recovery is not None:
-                    recovery_loss, fig = recovery(diff_manager, unet, linkage, embedder)
+                    try:
+                        recovery_loss, fig = recovery(diff_manager, unet, linkage, embedder)
+                    except FileNotFoundError as e:
+                        print(f"Skip recovery eval: missing test file ({e})")
+                        recovery_loss, fig = None, None
+
+                    if recovery_loss is None:
+                        continue
                     writer.add_scalar("Recovery Loss", recovery_loss, global_it)
                     writer.add_figure("Recovery Figure", fig, global_it)
 
                     if recovery_loss < best_recovery_loss:
                         best_recovery_loss = recovery_loss
-                        saveModel(save_dir + "best.pth", unet=unet, linkage=linkage, embedder=embedder)
+                        saveModel(save_dir + "best.pth", async_write=True, unet=unet, linkage=linkage, embedder=embedder)
 
 if __name__ == "__main__":
     train()
