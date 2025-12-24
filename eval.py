@@ -44,12 +44,12 @@ def recovery(ddm, unet, linkage, embedder, verbose=False):
         batch_data = torch.load("Dataset/test_Xian_B100_l512_E05.pth")
         loc_0, loc_T, loc_guess, time, mask, bool_mask, query_len, observe_len = batch_data
         loc_mean = 0
-        loc_rec = ddm.SPDM_backward(unet, linkage, loc_T, s_T, time, loc_guess, mask)
+        loc_rec = ddm.diffusionBackward(unet, linkage, loc_T, s_T, time, loc_guess, mask)
     elif dataset_name == "Chengdu":
         batch_data = torch.load("Dataset/test_Chengdu_B100_l512_E05.pth")
         loc_0, loc_T, loc_guess, time, mask, bool_mask, query_len, observe_len = batch_data
         loc_mean = 0
-        loc_rec = ddm.SPDM_backward(unet, linkage, loc_T, s_T, time, loc_guess, mask)
+        loc_rec = ddm.diffusionBackward(unet, linkage, loc_T, s_T, time, loc_guess, mask)
     else:
         raise ValueError("Invalid dataset name")
 
