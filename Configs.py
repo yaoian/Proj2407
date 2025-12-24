@@ -20,17 +20,17 @@ TRAJ_LEN = 512
 init_lr = 1e-4
 lr_reduce_factor = 0.5
 lr_reduce_patience = 50
-batch_size = 50
-epochs = 1000
-log_interval = 10
+batch_size = 36
+epochs = 1# 1000
+log_interval = 50
 mov_avg_interval = 15 * T
 # set to 0 to disable periodic logging/checkpoints
-save_ckpt_interval = 1000
-progress_log_interval = 1000
+save_ckpt_interval = 20000
+progress_log_interval = 5000
 
 ### Dataset Configs -+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 dataset_name = "apartments"
-# dataset_name = "Xian"
+#dataset_name = "Xian"
 # dataset_name = "Chengdu"
 
 ### Diffusion Configs -+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
@@ -50,7 +50,7 @@ model_name = "Trace_MultiSeq_Add"
 # model_name = "Trace_SingleSeq"
 # model_name = "Trace_MultiVec"
 
-embed_dim = 6
+embed_dim = 6 if dataset_name == "apartments" else 0
 
 ### Advanced settings -+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 
@@ -79,11 +79,16 @@ def get_batch_manager_class():
 
 actual_diff_step = T // diffusion_args["skip_step"] + 1
 
+# Input channels:
+# - base 6: traj(3) + loc_guess(2) + mask(1)
+# - apartments additionally concatenates embedder output with `embed_dim` channels in train.py
+base_in_c = 6 + (embed_dim if dataset_name == "apartments" else 0)
+
 if model_name == "Trace_MultiSeq_Add":
     from Models import Trace_MultiSeq_Add as Trace
     from Models import Trace_MultiSeq_Add_Linkage as Linkage
     Trace_args = {
-        "in_c": 6 + embed_dim,  # input trajectory encoding channels
+        "in_c": base_in_c,  # input trajectory encoding channels
         "out_c": 2,
         "diffusion_steps": T,  # maximum diffusion steps
         "c_list": [128, 128, 128, 256],  # channel schedule of stages, first element is stem output channels
@@ -100,7 +105,7 @@ elif model_name == "Trace_MultiSeq_Cat":
     from Models import Trace_MultiSeq_Cat as Trace
     from Models import Trace_MultiSeq_Cat_Linkage as Linkage
     Trace_args = {
-        "in_c": 6 + embed_dim,  # input trajectory encoding channels
+        "in_c": base_in_c,  # input trajectory encoding channels
         "out_c": 2,
         "state_c": 32,
         "diffusion_steps": T,  # maximum diffusion steps
@@ -119,7 +124,7 @@ elif model_name == "Trace_MultiSeq_CA":
     from Models import Trace_MultiSeq_CA as Trace
     from Models import Trace_MultiSeq_CA_Linkage as Linkage
     Trace_args = {
-        "in_c": 6 + embed_dim,  # input trajectory encoding channels
+        "in_c": base_in_c,  # input trajectory encoding channels
         "out_c": 2,
         "diffusion_steps": T,  # maximum diffusion steps
         "c_list": [128, 128, 128, 256],  # channel schedule of stages, first element is stem output channels
@@ -136,7 +141,7 @@ elif model_name == "Trace_MultiVec_Add":
     from Models import Trace_MultiVec_Add as Trace
     from Models import Trace_MultiVec_Add_Linkage as Linkage
     Trace_args = {
-        "in_c": 6 + embed_dim,  # input trajectory encoding channels
+        "in_c": base_in_c,  # input trajectory encoding channels
         "out_c": 2,
         "diffusion_steps": T,  # maximum diffusion steps
         "c_list": [128, 128, 128, 256],  # channel schedule of stages, first element is stem output channels
@@ -153,7 +158,7 @@ elif model_name == "Trace_SingleSeq":
     from Models import Trace_Seq_Cat as Trace
     from Models import Trace_Seq_Cat_Linkage as Linkage
     Trace_args = {
-        "in_c": 6 + embed_dim,  # input trajectory encoding channels
+        "in_c": base_in_c,  # input trajectory encoding channels
         "out_c": 2,
         "diffusion_steps": T,  # maximum diffusion steps
         "c_list": [128, 128, 128, 256],  # channel schedule of stages, first element is stem output channels
