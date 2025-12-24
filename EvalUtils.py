@@ -1,71 +1,81 @@
+import ctypes
+import os
+from typing import Tuple
+
 import numpy as np
 import torch
-import ctypes
-eval_c_lib = ctypes.cdll.LoadLibrary("./NDTW.dll")
-eval_c_lib.NDTW.restype = ctypes.c_float
+
+
+def _load_ndtw_lib() -> ctypes.CDLL:
+    lib_name = "NDTW.dll" if os.name == "nt" else "NDTW.so"
+    lib_path = os.path.join(os.path.dirname(__file__), lib_name)
+    if not os.path.isfile(lib_path):
+        raise FileNotFoundError(
+            f"Native DTW library not found: {lib_path}. Expected {lib_name} in repo root."
+        )
+    lib = ctypes.cdll.LoadLibrary(lib_path)
+    lib.NDTW.restype = ctypes.c_float
+    return lib
+
+
+eval_c_lib = _load_ndtw_lib()
 
 Tensor = torch.Tensor
 
 
 
 def JSD(original_data: Tensor, generated_data: Tensor, n_grids: int = 64, normalize: bool = True):
-    # traj_dataset: (B, 2, L)
-    # Get the distribution of all points in the dataset
-    # return: (B, 2, L)
+    """
+    Jensen–Shannon Divergence between 2D point distributions.
 
-    # (2BL, 2)
-    all_points = torch.cat([original_data.transpose(1, 2).reshape(-1, 2),
-                            generated_data.transpose(1, 2).reshape(-1, 2)], dim=0)
-    # STEP 1. get min and max
-    min_lon = all_points[:, 0].min().item()
-    max_lon = all_points[:, 0].max().item()
-    min_lat = all_points[:, 1].min().item()
-    max_lat = all_points[:, 1].max().item()
+    Expected input shapes:
+    - (B, 2, L) tensors (common in this repo), or
+    - (N, 2) tensors (flattened points)
 
-    # STEP 2. split city into 16x16 grid
+    Note: Padding/filtering should be done by the caller if needed.
+    """
+
+    def _to_points(x: Tensor) -> np.ndarray:
+        x = x.detach().to("cpu")
+        if x.ndim == 3:
+            x = x.transpose(1, 2).reshape(-1, 2)
+        elif x.ndim != 2 or x.shape[1] != 2:
+            raise ValueError(f"Unexpected input shape for JSD: {tuple(x.shape)}")
+        return x.numpy()
+
+    orig = _to_points(original_data)
+    gen = _to_points(generated_data)
+
+    all_points = np.concatenate([orig, gen], axis=0)
+    min_lon = float(all_points[:, 0].min())
+    max_lon = float(all_points[:, 0].max())
+    min_lat = float(all_points[:, 1].min())
+    max_lat = float(all_points[:, 1].max())
+
+    eps = 1e-12
     lng_interval = (max_lon - min_lon) / n_grids
     lat_interval = (max_lat - min_lat) / n_grids
+    lng_interval = max(lng_interval, eps)
+    lat_interval = max(lat_interval, eps)
 
-    # STEP 3. count points in each grid
-    # point_count = torch.zeros((n_grids, n_grids), device=traj_dataset.device)
-
-    result = []
-
-    for data in [original_data, generated_data]:
-        lng_indices = torch.clip((data[:, 0] - min_lon) // lng_interval, 0, n_grids - 1).to(torch.long)
-        lat_indices = torch.clip((data[:, 1] - min_lat) // lat_interval, 0, n_grids - 1).to(torch.long)
-
-        eval_c_lib.accumulateCount.restype = ctypes.POINTER(ctypes.c_float * n_grids * n_grids)
-        lng_indices = lng_indices.cpu().numpy().astype(np.int32).ctypes.data_as(ctypes.POINTER(ctypes.c_int))
-        lat_indices = lat_indices.cpu().numpy().astype(np.int32).ctypes.data_as(ctypes.POINTER(ctypes.c_int))
-        # The C function eval_c_lib.accumulateCount does this:
-        # point_count = np.zeros((n_grids, n_grids))
-        # for r, c in zip(lng_indices, lat_indices):
-        #     point_count[r, c] += 1
-        # return point_count
-        # Python is insanely slow, so we use C to do this
-        point_count_ptr = eval_c_lib.accumulateCount(lng_indices, lat_indices, n_grids, data.shape[0])
-
-        point_count = torch.tensor(np.frombuffer(point_count_ptr.contents, dtype=np.int32).reshape(n_grids, n_grids)).cuda().to(torch.float32)
-
-        # STEP 4. normalize
+    def _hist(points: np.ndarray) -> np.ndarray:
+        lng_idx = np.clip(((points[:, 0] - min_lon) / lng_interval).astype(np.int64), 0, n_grids - 1)
+        lat_idx = np.clip(((points[:, 1] - min_lat) / lat_interval).astype(np.int64), 0, n_grids - 1)
+        flat = lng_idx * n_grids + lat_idx
+        counts = np.bincount(flat, minlength=n_grids * n_grids).astype(np.float64)
+        counts = counts.reshape(n_grids, n_grids)
         if normalize:
-            point_count = (point_count + 1) / point_count.sum()
-        result.append(point_count)
+            counts = (counts + 1.0) / float(counts.sum() + n_grids * n_grids)
+        return counts
 
-    P, Q = result
+    P = _hist(orig)
+    Q = _hist(gen)
+    M = 0.5 * (P + Q)
 
-    P_avg = 0.5 * (P + Q)
-    kl_divergence_P = torch.nn.functional.kl_div(P.log(), P_avg, reduction='batchmean')
+    def _kl(A: np.ndarray, B: np.ndarray) -> float:
+        return float(np.sum(A * np.log((A + eps) / (B + eps))))
 
-    # Compute KL divergence between Q and the average distribution of P and Q
-    Q_avg = 0.5 * (P + Q)
-    kl_divergence_Q = torch.nn.functional.kl_div(Q.log(), Q_avg, reduction='batchmean')
-
-    # Compute Jensen-Shannon Divergence
-    jsd_score = 0.5 * (kl_divergence_P + kl_divergence_Q)
-
-    return jsd_score.item()
+    return 0.5 * (_kl(P, M) + _kl(Q, M))
 
 
 def NDTW(target_traj, compare_traj):
@@ -90,4 +100,4 @@ def NDTW(target_traj, compare_traj):
     dist_mat_ptr = dist_mat.cpu().numpy().astype(np.float32).ctypes.data_as(ctypes.POINTER(ctypes.c_float))
     dtw_ptr = dtw.cpu().numpy().astype(np.float32).ctypes.data_as(ctypes.POINTER(ctypes.c_float))
 
-    return eval_c_lib.NDTW(dist_mat_ptr, dtw_ptr, n, m)
+    return float(eval_c_lib.NDTW(dist_mat_ptr, dtw_ptr, n, m))
