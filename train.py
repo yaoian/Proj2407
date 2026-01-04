@@ -35,7 +35,7 @@ def train():
     # --- Model and Diffusion Configs ---
     unet = Trace(**Trace_args).to(device).train()
     linkage = Linkage(unet.getStateShapes(TRAJ_LEN), **link_args).to(device).train()
-    embedder = Embedder(embed_dim).to(device).train() if dataset_name == "apartments" else None
+    embedder = Embedder(embed_dim).to(device).train() if embed_dim > 0 else None
     if resume_checkpoint:
         if not os.path.isfile(resume_checkpoint):
             raise FileNotFoundError(f"Resume checkpoint not found: {resume_checkpoint}")
@@ -45,17 +45,42 @@ def train():
         loadModel(resume_checkpoint, **resume_models)
     diff_manager = DDIM(**diffusion_args, device=device)
 
+    def set_requires_grad(module, requires_grad: bool) -> None:
+        if module is None:
+            return
+        for p in module.parameters():
+            p.requires_grad = requires_grad
+
+    # --- Optional: freeze modules for finetune ---
+    if freeze_unet:
+        set_requires_grad(unet, False)
+    if freeze_linkage:
+        set_requires_grad(linkage, False)
+    if freeze_embedder:
+        set_requires_grad(embedder, False)
+
     # --- Loss function and optimizer ---
     loss_func = MaskedMSE()
 
-    # Embedder should have a smaller learning rate
-    # because it is trained on every sample for many times with the same input
-    params = [
-        {"params": unet.parameters()}, # Default learning rate
-        {"params": linkage.parameters()},  # Default learning rate
-    ]
-    if dataset_name == "apartments":
-        params.append({"params": embedder.parameters(), "lr": init_lr * 0.01})  # Smaller learning rate
+    def trainable_params(module):
+        if module is None:
+            return []
+        return [p for p in module.parameters() if p.requires_grad]
+
+    # Embedder should have a smaller learning rate because it is trained on every sample many times.
+    params = []
+    unet_params = trainable_params(unet)
+    if unet_params:
+        params.append({"params": unet_params})  # Default learning rate
+    linkage_params = trainable_params(linkage)
+    if linkage_params:
+        params.append({"params": linkage_params})  # Default learning rate
+    embedder_params = trainable_params(embedder)
+    if embedder_params:
+        params.append({"params": embedder_params, "lr": init_lr * 0.01})  # Smaller learning rate
+
+    if not params:
+        raise ValueError("No trainable parameters: all modules are frozen.")
 
     optimizer = optim.AdamW(params, lr=init_lr)
 
