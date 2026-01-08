@@ -89,7 +89,7 @@ class BatchManager():
         :param load_idx: The index of the batch to load data to
         :return:
         """
-        self.dataset.resetSampleLength(random.choice(list(range(64, 512))))
+        self.dataset.resetSampleLength(random.choice(list(range(64, self.L + 1))))
         self.dataset.resetEraseRate(random.uniform(0.2, 0.9))
 
         # Get the data
@@ -223,4 +223,3 @@ class BatchManager():
         trajs[self.T] = traj
 
         return trajs, mask, comb_noises
-
