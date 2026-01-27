@@ -140,8 +140,9 @@ class DatasetApartments(Dataset):
 
 
 if __name__ == "__main__":
-    dataset = DatasetApartments(max_len=512, load_path="Submission/Proj2407/apartment_dataset.pth")
+    dataset = DatasetApartments(max_len=512, load_path="Dataset/apartment_dataset.pth")
     dataset.resetEraseRate(0.5)
-
+    print(dataset[0])
     traj, mask, loc_guess, loc_mean, meta = dataset[0]
-    print(traj.shape, mask.shape, loc_guess.shape, loc_mean.shape, meta.shape)
+    # 输出每个变量的形状
+    print("traj:" + str(traj.shape), "mask:" + str(mask.shape), "loc_guess:" + str(loc_guess.shape), "loc_mean:" + str(loc_mean.shape), "meta:" + str(meta.shape))

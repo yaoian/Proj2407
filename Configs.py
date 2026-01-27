@@ -29,10 +29,10 @@ save_ckpt_interval = 20000
 progress_log_interval = 5000
 
 ### Dataset Configs -+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-dataset_name = "apartments"
+#dataset_name = "apartments"
 #dataset_name = "Xian"
 # dataset_name = "Chengdu"
-
+dataset_name = "Indoor"
 ### Diffusion Configs -+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 diffusion_args = {
     "min_beta": 0.0001,
@@ -44,8 +44,8 @@ diffusion_args = {
 
 ### Diffusion Configs -+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
 
-model_name = "Trace_MultiSeq_Add"
-# model_name = "Trace_MultiSeq_Cat"
+#model_name = "Trace_MultiSeq_Add"
+model_name = "Trace_MultiSeq_Cat"
 # model_name = "Trace_MultiSeq_CA"
 # model_name = "Trace_SingleSeq"
 # model_name = "Trace_MultiVec"
@@ -59,6 +59,13 @@ save_dir = log_dir
 
 # Resume training (set to a .pth path or None)
 resume_checkpoint = None
+
+# Finetune / freezing
+# - Set `resume_checkpoint` to load an already-trained model
+# - Then freeze some modules and only train the remaining ones (e.g. embedder)
+freeze_unet = False
+freeze_linkage = False
+freeze_embedder = False
 
 if dataset_name == "apartments":
     dataset_args = {

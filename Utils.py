@@ -88,4 +88,19 @@ class MaskedMSE(torch.nn.Module):
         self.mse = torch.nn.MSELoss()
 
     def forward(self, output, eps, mask):
-        return torch.mean(torch.stack([self.mse(output[b][mask[b, :2, :]], eps[b].flatten()) for b in range(batch_size)]))
+        B = output.shape[0]
+        losses = []
+        for b in range(B):
+            m = mask[b, :2, :]
+            pred = output[b][m]
+            if isinstance(eps, (list, tuple)):
+                target = eps[b].reshape(-1)
+            else:
+                target = eps[b][m]
+            if pred.numel() != target.numel():
+                raise ValueError(
+                    f"MaskedMSE shape mismatch: pred={pred.numel()} target={target.numel()} "
+                    f"(mask_true={int(m.sum().item())})"
+                )
+            losses.append(self.mse(pred, target))
+        return torch.mean(torch.stack(losses))

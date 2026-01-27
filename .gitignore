@@ -162,13 +162,22 @@ cython_debug/
 .idea/
 
 # dataset
+
 Dataset/*_nov_cache.pth
-Dataset/apartment_dataset.pth
+Dataset/apartment_dataset.*
+Dataset/Geolife
+Dataset/T-Drive
+Dataset/*_B100_l512_E05.pth
 # serena
 .serena/
 # reading
-tools/
+
 # output
 output/
-
+# embedding
+embedding/
 Runs
+Dataset/Geolife Trajectories 1.3.zip
+MapleMonoNormal-NF-CN-unhinted.zip
+.gitignore
+

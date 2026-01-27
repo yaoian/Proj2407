@@ -20,6 +20,8 @@ from math import isnan
 import random
 from tqdm import tqdm
 import os
+import json
+from contextlib import nullcontext
 
 
 def train():
@@ -34,7 +36,8 @@ def train():
 
     # --- Model and Diffusion Configs ---
     unet = Trace(**Trace_args).to(device).train()
-    linkage = Linkage(unet.getStateShapes(TRAJ_LEN), **link_args).to(device).train()
+    linkage_shapes = unet.getFeatureShapes(TRAJ_LEN) if hasattr(unet, "getFeatureShapes") else unet.getStateShapes(TRAJ_LEN)
+    linkage = Linkage(linkage_shapes, **link_args).to(device).train()
     embedder = Embedder(embed_dim).to(device).train() if embed_dim > 0 else None
     if resume_checkpoint:
         if not os.path.isfile(resume_checkpoint):
@@ -89,9 +92,34 @@ def train():
     os.makedirs(save_dir)
     writer = SummaryWriter(log_dir)
     info_path = os.path.join(log_dir, "info.txt")
+    config_path = os.path.join(log_dir, "train_config.json")
+
+    run_config = {
+        "dataset_name": dataset_name,
+        "model_name": model_name,
+        "T": int(T),
+        "TRAJ_LEN": int(TRAJ_LEN),
+        "init_lr": float(init_lr),
+        "batch_size": int(batch_size),
+        "epochs": int(epochs),
+        "diffusion_args": diffusion_args,
+        "Trace_args": Trace_args,
+        "link_args": link_args,
+        "resume_checkpoint": resume_checkpoint,
+        "freeze_unet": bool(freeze_unet),
+        "freeze_linkage": bool(freeze_linkage),
+        "freeze_embedder": bool(freeze_embedder),
+        "device": str(device),
+    }
+    with open(config_path, "w", encoding="utf-8") as f:
+        json.dump(run_config, f, ensure_ascii=False, indent=2)
 
     with open(info_path, "w") as file:
-        file.write(f"Training {unet.__class__.__name__} on 20240711 dataset\n")
+        file.write(f"Training {unet.__class__.__name__}\n")
+        file.write(f"dataset_name={dataset_name} model_name={model_name}\n")
+        file.write(f"init_lr={init_lr} batch_size={batch_size} epochs={epochs}\n")
+        file.write(f"diffusion_args={diffusion_args}\n")
+        file.write(f"run_config={config_path}\n")
         file.write("Model:\n")
         file.write(str(unet))
 
@@ -125,8 +153,13 @@ def train():
     # --- Training Loop ---
 
     # The proposed training algorithm with 2 denoising steps trained in one iteration
-    best_recovery_loss = 1000
-    with ThreadedScheduler(batch_manager, 3) as data_iterator:
+    best_recovery_loss = float("inf")
+    recovery_eval_interval = 1000
+    use_prefetch = os.environ.get("TRACE_PREFETCH", "1").strip().lower() not in ("0", "false", "no")
+    scheduler_cm = ThreadedScheduler(batch_manager, 3) if use_prefetch else nullcontext(batch_manager)
+
+    with scheduler_cm as data_iterator:
+        total_iterations = len(data_iterator)
         pbar = tqdm(data_iterator, desc="Training", ncols=100)
         for global_it, batch_data in enumerate(pbar):
             optimizer.zero_grad()
@@ -200,7 +233,9 @@ def train():
                 )
 
             # Skip the very first iteration to avoid heavy recovery eval right at startup.
-            if global_it > 0 and global_it % 1000 == 0:
+            # For short runs (e.g. small datasets / low epochs), also evaluate at the final iteration.
+            is_last_iteration = global_it == total_iterations - 1
+            if global_it > 0 and (global_it % recovery_eval_interval == 0 or is_last_iteration):
                 try:
                     from eval import recovery
                 except ModuleNotFoundError as e:

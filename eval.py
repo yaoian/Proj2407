@@ -1,6 +1,7 @@
 import torch
 import matplotlib.pyplot as plt
 from Configs import *
+from pathlib import Path
 
 
 def plotBatchLoc(loc: Tensor, is_scatter: bool, color):
@@ -34,24 +35,36 @@ def recovery(ddm, unet, linkage, embedder, verbose=False):
     for shape in unet.getStateShapes(TRAJ_LEN):
         s_T.append(torch.zeros(B, *shape, dtype=torch.float32, device=device))
 
+    def _load_taxi_test_batch(name: str) -> Tuple[Tensor, ...]:
+        candidates = [
+            Path(f"Dataset/test_{name}_B100_l{TRAJ_LEN}_E05.pth"),
+            Path(f"Dataset/test_{name}_B100_l{TRAJ_LEN}_E0.5.pth"),
+        ]
+        for p in candidates:
+            if p.is_file():
+                return torch.load(p.as_posix(), map_location=device)
+
+        matches = sorted(Path("Dataset").glob(f"test_{name}_B*_l{TRAJ_LEN}_E*.pth"))
+        for p in matches:
+            if p.is_file():
+                return torch.load(p.as_posix(), map_location=device)
+        raise FileNotFoundError(
+            f"No taxi test batch found for dataset_name={name}. "
+            f"Tried: {[c.as_posix() for c in candidates]} and Dataset/test_{name}_B*_l{TRAJ_LEN}_E*.pth"
+        )
+
     if dataset_name == "apartments":
-        batch_data = torch.load("Dataset/test_20240711_B100_l512_E05.pth")
+        batch_data = torch.load("Dataset/test_20240711_B100_l512_E05.pth", map_location=device)
+        #batch_data = torch.load("Dataset/test_GeolifeNew_B100_l512_E05.pth", map_location=device)
         loc_0, loc_T, loc_guess, loc_mean, meta, time, mask, bool_mask, query_len, observe_len = batch_data
         with torch.no_grad():
             E = embedder(meta, loc_mean)
         loc_rec = ddm.diffusionBackwardWithE(unet, linkage, E, loc_T, s_T, time, loc_guess, mask)
-    elif dataset_name == "Xian":
-        batch_data = torch.load("Dataset/test_Xian_B100_l512_E05.pth")
-        loc_0, loc_T, loc_guess, time, mask, bool_mask, query_len, observe_len = batch_data
-        loc_mean = 0
-        loc_rec = ddm.diffusionBackward(unet, linkage, loc_T, s_T, time, loc_guess, mask)
-    elif dataset_name == "Chengdu":
-        batch_data = torch.load("Dataset/test_Chengdu_B100_l512_E05.pth")
-        loc_0, loc_T, loc_guess, time, mask, bool_mask, query_len, observe_len = batch_data
-        loc_mean = 0
-        loc_rec = ddm.diffusionBackward(unet, linkage, loc_T, s_T, time, loc_guess, mask)
     else:
-        raise ValueError("Invalid dataset name")
+        batch_data = _load_taxi_test_batch(dataset_name)
+        loc_0, loc_T, loc_guess, time, mask, bool_mask, query_len, observe_len = batch_data
+        loc_mean = 0
+        loc_rec = ddm.diffusionBackward(unet, linkage, loc_T, s_T, time, loc_guess, mask)
 
     loc_0_query_part = loc_0[bool_mask]
     loc_rec_query_part = loc_rec[bool_mask]
