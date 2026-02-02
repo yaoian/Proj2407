@@ -1,6 +1,6 @@
 import ctypes
 import os
-from typing import Tuple
+from typing import Optional, Tuple
 
 import numpy as np
 import torch
@@ -18,13 +18,28 @@ def _load_ndtw_lib() -> ctypes.CDLL:
     return lib
 
 
-eval_c_lib = _load_ndtw_lib()
+_eval_c_lib: Optional[ctypes.CDLL] = None
+_eval_c_lib_error: Optional[str] = None
+try:
+    _eval_c_lib = _load_ndtw_lib()
+except Exception as e:
+    _eval_c_lib = None
+    _eval_c_lib_error = f"{type(e).__name__}: {e}"
+
+NDTW_BACKEND = "native" if _eval_c_lib is not None else "python"
+NDTW_NATIVE_ERROR = _eval_c_lib_error
 
 Tensor = torch.Tensor
 
 
 
-def JSD(original_data: Tensor, generated_data: Tensor, n_grids: int = 64, normalize: bool = True):
+def JSD(
+    original_data: Tensor,
+    generated_data: Tensor,
+    n_grids: int = 64,
+    normalize: bool = True,
+    bounds: Optional[Tuple[float, float, float, float]] = None,
+):
     """
     Jensen–Shannon Divergence between 2D point distributions.
 
@@ -33,6 +48,8 @@ def JSD(original_data: Tensor, generated_data: Tensor, n_grids: int = 64, normal
     - (N, 2) tensors (flattened points)
 
     Note: Padding/filtering should be done by the caller if needed.
+    If `bounds` is provided, it must be (min_x, max_x, min_y, max_y) and will be used
+    to build the shared discretization grid (helps align experiments across models).
     """
 
     def _to_points(x: Tensor) -> np.ndarray:
@@ -46,11 +63,14 @@ def JSD(original_data: Tensor, generated_data: Tensor, n_grids: int = 64, normal
     orig = _to_points(original_data)
     gen = _to_points(generated_data)
 
-    all_points = np.concatenate([orig, gen], axis=0)
-    min_lon = float(all_points[:, 0].min())
-    max_lon = float(all_points[:, 0].max())
-    min_lat = float(all_points[:, 1].min())
-    max_lat = float(all_points[:, 1].max())
+    if bounds is None:
+        all_points = np.concatenate([orig, gen], axis=0)
+        min_lon = float(all_points[:, 0].min())
+        max_lon = float(all_points[:, 0].max())
+        min_lat = float(all_points[:, 1].min())
+        max_lat = float(all_points[:, 1].max())
+    else:
+        min_lon, max_lon, min_lat, max_lat = bounds
 
     eps = 1e-12
     lng_interval = (max_lon - min_lon) / n_grids
@@ -78,6 +98,30 @@ def JSD(original_data: Tensor, generated_data: Tensor, n_grids: int = 64, normal
     return 0.5 * (_kl(P, M) + _kl(Q, M))
 
 
+def _ndtw_python(target_traj: Tensor, compare_traj: Tensor) -> float:
+    n = int(target_traj.shape[1])
+    m = int(compare_traj.shape[1])
+    if n <= 0 or m <= 0:
+        return 0.0
+
+    lng_lat_A = target_traj[:2, :].T.contiguous()  # (n, 2)
+    lng_lat_B = compare_traj[:2, :].T.contiguous()  # (m, 2)
+    dist_mat = torch.cdist(lng_lat_A, lng_lat_B, p=2).detach().to("cpu").numpy().astype(np.float64)  # (n, m)
+
+    dtw = np.full((n + 1, m + 1), np.inf, dtype=np.float64)
+    dtw[0, 0] = 0.0
+    for i in range(1, n + 1):
+        prev_i = dtw[i - 1]
+        cur_i = dtw[i]
+        dist_i = dist_mat[i - 1]
+        for j in range(1, m + 1):
+            cost = dist_i[j - 1]
+            cur_i[j] = cost + min(cur_i[j - 1], prev_i[j], prev_i[j - 1])
+
+    # normalize by sequence length to keep scale comparable across different lengths
+    return float(dtw[n, m] / max(1, max(n, m)))
+
+
 def NDTW(target_traj, compare_traj):
     """
     This function calculates the Dynamic Time Warping (DTW) distance between two trajectories.
@@ -85,8 +129,11 @@ def NDTW(target_traj, compare_traj):
     :param compare_traj: trajectory 2 (3, M)
     :return: DTW distance
     """
-    n = target_traj.shape[1]
-    m = compare_traj.shape[1]
+    if _eval_c_lib is None:
+        return _ndtw_python(target_traj, compare_traj)
+
+    n = int(target_traj.shape[1])
+    m = int(compare_traj.shape[1])
     dtw = torch.zeros((n + 1, m + 1))
     dtw[1:, 0] = torch.inf
     dtw[0, 1:] = torch.inf
@@ -100,4 +147,8 @@ def NDTW(target_traj, compare_traj):
     dist_mat_ptr = dist_mat.cpu().numpy().astype(np.float32).ctypes.data_as(ctypes.POINTER(ctypes.c_float))
     dtw_ptr = dtw.cpu().numpy().astype(np.float32).ctypes.data_as(ctypes.POINTER(ctypes.c_float))
 
-    return float(eval_c_lib.NDTW(dist_mat_ptr, dtw_ptr, n, m))
+    return float(_eval_c_lib.NDTW(dist_mat_ptr, dtw_ptr, n, m))
+
+
+# Backward/typo compatibility (some notes/scripts may call it NTDW).
+NTDW = NDTW

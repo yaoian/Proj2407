@@ -36,6 +36,23 @@ class DatasetApartments(Dataset):
     def resetEraseRate(self, elim_rate: float):
         self.erase_rate = min(1.0, max(0.0, elim_rate))
 
+    def state_dict(self) -> dict:
+        return {
+            "max_length": int(self.max_length),
+            "sample_length": int(self.sample_length),
+            "erase_rate": float(self.erase_rate),
+            "centering": bool(self.centering),
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        if not isinstance(state, dict):
+            return
+        if "sample_length" in state:
+            self.resetSampleLength(int(state["sample_length"]))
+        if "erase_rate" in state:
+            self.resetEraseRate(float(state["erase_rate"]))
+        # centering is a constructor option; do not mutate it here.
+
     @staticmethod
     # @torch.compile
     def guessTraj(traj_0, erase_mask):

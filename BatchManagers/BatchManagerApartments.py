@@ -182,6 +182,32 @@ class BatchManager():
         for i in range(len(s_t_to_T)):
             self.s_tp1_to_T[i] = s_t_to_T[i].detach()
 
+    def state_dict(self) -> dict:
+        return {
+            "data_idx": int(self.data_idx),
+            "dataset_idx_mapping": self.dataset_idx_mapping,
+            "mode": self.mode,
+            "skip_step": int(self.skip_step),
+            "T": int(self.T),
+            "B": int(self.B),
+            "L": int(self.L),
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        if not isinstance(state, dict):
+            return
+        try:
+            if "mode" in state:
+                self.mode = state["mode"]
+            if "data_idx" in state and len(self.dataset) > 0:
+                self.data_idx = int(state["data_idx"]) % len(self.dataset)
+            if "dataset_idx_mapping" in state:
+                mapping = np.asarray(state["dataset_idx_mapping"])
+                if mapping.shape == (len(self.dataset),):
+                    self.dataset_idx_mapping = mapping
+        except Exception:
+            return
+
 
     # @torch.compile
     def addNoise(self, traj_0: torch.Tensor, erase_mask: torch.Tensor):
@@ -223,4 +249,3 @@ class BatchManager():
         trajs[self.T] = traj
 
         return trajs, mask, comb_noises
-

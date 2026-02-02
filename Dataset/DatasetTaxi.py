@@ -5,6 +5,7 @@ import random
 from rich.status import Status
 
 from device_utils import get_default_device
+from Priors import guess_traj_time_interp
 
 class TaxiDataset(data.Dataset):
 
@@ -37,6 +38,24 @@ class TaxiDataset(data.Dataset):
     def resetShiftRate(self, shift_rate: float):
         self.shift_rate = min(1.0, max(0.0, shift_rate))
 
+    def state_dict(self) -> dict:
+        return {
+            "max_length": int(self.max_length),
+            "sample_length": int(self.sample_length),
+            "erase_rate": float(self.erase_rate),
+            "shift_rate": float(self.shift_rate),
+        }
+
+    def load_state_dict(self, state: dict) -> None:
+        if not isinstance(state, dict):
+            return
+        if "sample_length" in state:
+            self.resetSampleLength(int(state["sample_length"]))
+        if "erase_rate" in state:
+            self.resetEraseRate(float(state["erase_rate"]))
+        if "shift_rate" in state:
+            self.resetShiftRate(float(state["shift_rate"]))
+
     @staticmethod
     # @torch.compile
     def guessTraj(traj_0, erase_mask):
@@ -46,36 +65,7 @@ class TaxiDataset(data.Dataset):
         :param mask:  (L,)
         :return: guessed locations: (2, L)
         """
-        boolean_mask = erase_mask > 0.1  # (L,)
-
-        erased_subtraj = traj_0[:, boolean_mask]  # (3, L_erased)
-        remain_subtraj = traj_0[:, ~boolean_mask]  # (3, L_remain)
-
-        L_remain = remain_subtraj.shape[-1]
-
-        time_interp = erased_subtraj[2]  # (L_erased)
-        time_remain = remain_subtraj[2]  # (L_remain)
-        ids_right = torch.searchsorted(time_remain, time_interp).to(torch.long)  # (L_erased)
-        ids_left = ids_right - 1  # (L_erased)
-
-        ids_left = torch.clamp(ids_left, 0, L_remain - 1)
-        ids_right = torch.clamp(ids_right, 0, L_remain - 1)
-
-        traj_left = remain_subtraj[:, ids_left]
-        traj_right = remain_subtraj[:, ids_right]
-
-        ratio = (time_interp - traj_left[2]) / (traj_right[2] - traj_left[2])  # (L_erased)
-
-        erased_loc_guess = traj_left[:2] * (1 - ratio) + traj_right[:2] * ratio  # (2, L_erased)
-
-        loc_guess = traj_0[:2].clone()  # (2, L)
-        loc_guess[:, boolean_mask] = erased_loc_guess
-
-        nan_mask = torch.isnan(loc_guess)
-
-        loc_guess[nan_mask] = torch.zeros_like(loc_guess[nan_mask])
-
-        return loc_guess
+        return guess_traj_time_interp(traj_0, erase_mask)
 
 
 
