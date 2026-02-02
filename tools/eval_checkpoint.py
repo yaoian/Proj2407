@@ -7,7 +7,8 @@ Evaluate a trained checkpoint on the saved test batch and report metrics:
 - Write a JSON record next to the checkpoint (default behavior)
 
 Typical usage (recommended to use venv python to avoid uv cache permission issues):
-  .venv/bin/python tools/eval_checkpoint.py --ckpt Runs/<run>/best.pth --test-file Dataset/test_Xian_B100_l512_E05.pth
+  .venv/bin/python tools/eval_checkpoint.py --ckpt Runs/<run>/best_full.pth --test-file Dataset/test_Xian_B100_l512_E05.pth
+  (also works with weight-only checkpoints like best.pth/last.pth)
 """
 
 import argparse
@@ -34,7 +35,7 @@ from Configs import (
     diffusion_args as cfg_diffusion_args,
 )
 from DDM import DDIM
-from EvalUtils import JSD, NDTW
+from EvalUtils import JSD, NDTW, NDTW_BACKEND, NDTW_NATIVE_ERROR
 from Models import (
     Embedder,
     Trace_MultiSeq_Add,
@@ -68,6 +69,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-ndtw", action="store_true", help="Skip NDTW (can be slow)")
     parser.add_argument("--no-jsd", action="store_true", help="Skip JSD")
     parser.add_argument(
+        "--unified-scope",
+        type=str,
+        default="erased",
+        choices=("erased", "valid", "evalpy"),
+        help="Align MSE/JSD/NDTW on the same point subset: erased(query) / valid / evalpy(bool_mask).",
+    )
+    parser.add_argument(
+        "--indoor-denorm",
+        action="store_true",
+        help=(
+            "If dataset is Indoor, de-normalize x/y (z-score) before computing metrics. "
+            "Requires --indoor-norm-stats (or default Dataset/Indoor_norm_stats.json)."
+        ),
+    )
+    parser.add_argument(
+        "--indoor-norm-stats",
+        type=str,
+        default="Dataset/Indoor_norm_stats.json",
+        help="Path to Indoor z-score stats JSON: {'mean':[mx,my,mt],'std':[sx,sy,st]}.",
+    )
+    parser.add_argument(
         "--report-guess",
         action="store_true",
         help="Also report metrics for loc_guess baseline (time interpolation) for quick comparison.",
@@ -96,11 +118,15 @@ def find_latest_ckpt() -> str:
     candidates = []
     runs_dir = os.path.join(PROJECT_ROOT, "Runs")
     for root, _, files in os.walk(runs_dir):
+        if "best_full.pth" in files:
+            candidates.append(os.path.join(root, "best_full.pth"))
         if "best.pth" in files:
             candidates.append(os.path.join(root, "best.pth"))
     if candidates:
         return max(candidates, key=os.path.getmtime)
     for root, _, files in os.walk(runs_dir):
+        if "last_full.pth" in files:
+            candidates.append(os.path.join(root, "last_full.pth"))
         if "last.pth" in files:
             candidates.append(os.path.join(root, "last.pth"))
     if candidates:
@@ -152,7 +178,55 @@ def load_train_config_for_ckpt(ckpt_path: str) -> Tuple[Optional[dict], Optional
     return cfg, cfg_path
 
 
+def _load_indoor_norm_stats(path: str) -> Tuple[float, float, float, float]:
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    mean = data.get("mean")
+    std = data.get("std")
+    if not (isinstance(mean, list) and isinstance(std, list) and len(mean) >= 2 and len(std) >= 2):
+        raise ValueError(f"Invalid Indoor norm stats JSON: {path}")
+    mx, my = float(mean[0]), float(mean[1])
+    sx, sy = float(std[0]), float(std[1])
+    if sx <= 0 or sy <= 0:
+        raise ValueError(f"Invalid std in Indoor norm stats JSON: {path} std={std}")
+    return mx, my, sx, sy
+
+
+def _maybe_denorm_xy_for_metrics(
+    dataset_name: str,
+    do_denorm: bool,
+    stats_path: str,
+    loc_0: torch.Tensor,
+    loc_rec: torch.Tensor,
+    loc_guess: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, Optional[dict]]:
+    if dataset_name != "Indoor" or not do_denorm:
+        return loc_0, loc_rec, loc_guess, None
+
+    if not os.path.isfile(stats_path):
+        raise FileNotFoundError(
+            f"Indoor de-normalization requested but stats file not found: {stats_path}. "
+            "Create it with keys {'mean':[mx,my,mt],'std':[sx,sy,st]}."
+        )
+
+    mx, my, sx, sy = _load_indoor_norm_stats(stats_path)
+    mean = torch.tensor([mx, my], dtype=loc_0.dtype, device=loc_0.device).view(1, 2, 1)
+    std = torch.tensor([sx, sy], dtype=loc_0.dtype, device=loc_0.device).view(1, 2, 1)
+
+    loc_0_dn = loc_0 * std + mean
+    loc_rec_dn = loc_rec * std + mean
+    loc_guess_dn = loc_guess * std + mean
+    meta = {
+        "stats_path": stats_path,
+        "mean_xy": [mx, my],
+        "std_xy": [sx, sy],
+    }
+    return loc_0_dn, loc_rec_dn, loc_guess_dn, meta
+
+
 def infer_ckpt_in_c(checkpoint: dict) -> int:
+    if "models" in checkpoint and isinstance(checkpoint["models"], dict):
+        checkpoint = checkpoint["models"]
     unet_state = checkpoint.get("unet")
     if not isinstance(unet_state, dict):
         raise ValueError("Checkpoint missing 'unet' state_dict")
@@ -175,6 +249,8 @@ def load_checkpoint_from_state(
     trace_args: dict,
     linkage_args: dict,
 ) -> Tuple[torch.nn.Module, torch.nn.Module, Optional[torch.nn.Module]]:
+    if "models" in checkpoint and isinstance(checkpoint["models"], dict):
+        checkpoint = checkpoint["models"]
     trace_args = dict(trace_args)
     trace_args["in_c"] = in_c
 
@@ -320,6 +396,16 @@ def main() -> None:
         unet, linkage, embedder, ddm, loc_T, time, loc_guess, mask, loc_mean, meta, ckpt_uses_embedder
     )
 
+    # Metric space selection (for Indoor, optionally de-normalize x/y back to original scale).
+    loc_0_m, loc_rec_m, loc_guess_m, indoor_denorm_meta = _maybe_denorm_xy_for_metrics(
+        dataset_name=cfg_dataset_name,
+        do_denorm=bool(args.indoor_denorm),
+        stats_path=resolve_path(args.indoor_norm_stats),
+        loc_0=loc_0,
+        loc_rec=loc_rec,
+        loc_guess=loc_guess,
+    )
+
     valid = mask[:, 0, :] >= 0
     erased = (mask[:, 0, :] > 0.1) & valid
     observed = (mask[:, 0, :] <= 0.1) & valid
@@ -327,8 +413,8 @@ def main() -> None:
     erased_2d = erased.unsqueeze(1).repeat(1, 2, 1)
     valid_2d = valid.unsqueeze(1).repeat(1, 2, 1)
 
-    mse_erased = torch.nn.functional.mse_loss(loc_rec[erased_2d], loc_0[erased_2d]).item() * 1000.0
-    mse_valid = torch.nn.functional.mse_loss(loc_rec[valid_2d], loc_0[valid_2d]).item() * 1000.0
+    mse_erased = torch.nn.functional.mse_loss(loc_rec_m[erased_2d], loc_0_m[erased_2d]).item() * 1000.0
+    mse_valid = torch.nn.functional.mse_loss(loc_rec_m[valid_2d], loc_0_m[valid_2d]).item() * 1000.0
     bool_mask_eval = bool_mask
     if bool_mask_eval.dtype != torch.bool:
         bool_mask_eval = bool_mask_eval > 0.1
@@ -336,13 +422,26 @@ def main() -> None:
         bool_mask_eval = bool_mask_eval.unsqueeze(1)
     if bool_mask_eval.shape[1] == 1:
         bool_mask_eval = bool_mask_eval.repeat(1, 2, 1)
-    mse_evalpy = torch.nn.functional.mse_loss(loc_rec[bool_mask_eval], loc_0[bool_mask_eval]).item() * 1000.0
+    mse_evalpy = torch.nn.functional.mse_loss(loc_rec_m[bool_mask_eval], loc_0_m[bool_mask_eval]).item() * 1000.0
+
+    if args.unified_scope == "valid":
+        unified_1d = valid
+    elif args.unified_scope == "evalpy":
+        unified_1d = bool_mask_eval.any(dim=1)
+    else:
+        unified_1d = erased
+    unified_2d = unified_1d.unsqueeze(1).repeat(1, 2, 1)
+    unified_points = int(unified_1d.sum().item())
+
+    mse_unified = torch.nn.functional.mse_loss(loc_rec_m[unified_2d], loc_0_m[unified_2d]).item() * 1000.0
 
     mse_guess_erased = None
     mse_guess_valid = None
+    mse_guess_unified = None
     if args.report_guess:
-        mse_guess_erased = torch.nn.functional.mse_loss(loc_guess[erased_2d], loc_0[erased_2d]).item() * 1000.0
-        mse_guess_valid = torch.nn.functional.mse_loss(loc_guess[valid_2d], loc_0[valid_2d]).item() * 1000.0
+        mse_guess_erased = torch.nn.functional.mse_loss(loc_guess_m[erased_2d], loc_0_m[erased_2d]).item() * 1000.0
+        mse_guess_valid = torch.nn.functional.mse_loss(loc_guess_m[valid_2d], loc_0_m[valid_2d]).item() * 1000.0
+        mse_guess_unified = torch.nn.functional.mse_loss(loc_guess_m[unified_2d], loc_0_m[unified_2d]).item() * 1000.0
 
     record = {
         "ckpt": ckpt_path,
@@ -356,14 +455,22 @@ def main() -> None:
         "B": int(B),
         "traj_len": int(traj_len),
         "ckpt_in_c": int(ckpt_in_c),
+        "ndtw_backend": NDTW_BACKEND,
+        "ndtw_native_error": NDTW_NATIVE_ERROR,
+        "metrics_space": "denorm_xy" if indoor_denorm_meta is not None else "normalized_xy",
+        "indoor_denorm": indoor_denorm_meta,
         "points_valid": int(valid.sum().item()),
         "points_observed": int(observed.sum().item()),
         "points_erased": int(erased.sum().item()),
+        "unified_scope": args.unified_scope,
+        "points_unified": int(unified_points),
         "mse_erased_x1000": float(mse_erased),
         "mse_valid_x1000": float(mse_valid),
         "mse_evalpy_x1000": float(mse_evalpy),
+        "mse_unified_x1000": float(mse_unified),
         "mse_guess_erased_x1000": float(mse_guess_erased) if mse_guess_erased is not None else None,
         "mse_guess_valid_x1000": float(mse_guess_valid) if mse_guess_valid is not None else None,
+        "mse_guess_unified_x1000": float(mse_guess_unified) if mse_guess_unified is not None else None,
         "jsd_grids64": None,
         "jsd_grids64_x1000": None,
         "jsd_guess_grids64": None,
@@ -376,6 +483,18 @@ def main() -> None:
         "ndtw_guess_median": None,
         "ndtw_guess_n": None,
         "ndtw_guess_mean_x1000": None,
+        "jsd_unified_grids64": None,
+        "jsd_unified_grids64_x1000": None,
+        "jsd_guess_unified_grids64": None,
+        "jsd_guess_unified_grids64_x1000": None,
+        "ndtw_unified_mean": None,
+        "ndtw_unified_median": None,
+        "ndtw_unified_n": None,
+        "ndtw_unified_mean_x1000": None,
+        "ndtw_guess_unified_mean": None,
+        "ndtw_guess_unified_median": None,
+        "ndtw_guess_unified_n": None,
+        "ndtw_guess_unified_mean_x1000": None,
         "timestamp": _dt.datetime.now().isoformat(timespec="seconds"),
         "args": vars(args),
     }
@@ -391,40 +510,75 @@ def main() -> None:
     print(f"diffusion_args_source={diffusion_args_source}")
     print(f"diffusion_args={diffusion_args}")
     print(f"points_valid={int(valid.sum().item())} points_observed={int(observed.sum().item())} points_erased={int(erased.sum().item())}")
+    print(f"unified_scope={args.unified_scope} points_unified={unified_points}")
+    print(f"ndtw_backend={NDTW_BACKEND}")
+    if NDTW_BACKEND != "native" and NDTW_NATIVE_ERROR:
+        print(f"ndtw_native_error={NDTW_NATIVE_ERROR}")
+    if indoor_denorm_meta is not None:
+        print(f"metrics_space=denorm_xy indoor_norm_stats={indoor_denorm_meta['stats_path']}")
     print(f"mse_erased_x1000={mse_erased:.6f}")
     print(f"mse_valid_x1000={mse_valid:.6f}")
     print(f"mse_evalpy_x1000={mse_evalpy:.6f}")
+    print(f"mse_unified_x1000={mse_unified:.6f}")
     if args.report_guess:
         assert mse_guess_erased is not None and mse_guess_valid is not None
         print(f"mse_guess_erased_x1000={mse_guess_erased:.6f}")
         print(f"mse_guess_valid_x1000={mse_guess_valid:.6f}")
+        assert mse_guess_unified is not None
+        print(f"mse_guess_unified_x1000={mse_guess_unified:.6f}")
 
     if not args.no_jsd:
-        orig_xy = loc_0[valid_2d].view(-1, 2).detach().cpu()
-        rec_xy = loc_rec[valid_2d].view(-1, 2).detach().cpu()
+        orig_xy = loc_0_m[valid_2d].view(-1, 2).detach().cpu()
+        rec_xy = loc_rec_m[valid_2d].view(-1, 2).detach().cpu()
         jsd = JSD(orig_xy, rec_xy, n_grids=64, normalize=True)
         record["jsd_grids64"] = float(jsd)
         record["jsd_grids64_x1000"] = float(jsd * 1000.0)
         print(f"jsd_grids64={jsd:.8f}")
         print(f"jsd_grids64_x1000={jsd * 1000.0:.6f}")
         if args.report_guess:
-            guess_xy = loc_guess[valid_2d].view(-1, 2).detach().cpu()
+            guess_xy = loc_guess_m[valid_2d].view(-1, 2).detach().cpu()
             jsd_guess = JSD(orig_xy, guess_xy, n_grids=64, normalize=True)
             record["jsd_guess_grids64"] = float(jsd_guess)
             record["jsd_guess_grids64_x1000"] = float(jsd_guess * 1000.0)
             print(f"jsd_guess_grids64={jsd_guess:.8f}")
             print(f"jsd_guess_grids64_x1000={jsd_guess * 1000.0:.6f}")
 
+        # Unified-scope JSD (aligned grid bounds based on GT only)
+        orig_xy_u = loc_0_m[unified_2d].view(-1, 2).detach().cpu()
+        rec_xy_u = loc_rec_m[unified_2d].view(-1, 2).detach().cpu()
+        if orig_xy_u.numel() > 0:
+            bounds = (
+                float(orig_xy_u[:, 0].min().item()),
+                float(orig_xy_u[:, 0].max().item()),
+                float(orig_xy_u[:, 1].min().item()),
+                float(orig_xy_u[:, 1].max().item()),
+            )
+            jsd_u = JSD(orig_xy_u, rec_xy_u, n_grids=64, normalize=True, bounds=bounds)
+            record["jsd_unified_grids64"] = float(jsd_u)
+            record["jsd_unified_grids64_x1000"] = float(jsd_u * 1000.0)
+            print(f"jsd_unified_grids64={jsd_u:.8f}")
+            print(f"jsd_unified_grids64_x1000={jsd_u * 1000.0:.6f}")
+            if args.report_guess:
+                guess_xy_u = loc_guess_m[unified_2d].view(-1, 2).detach().cpu()
+                jsd_guess_u = JSD(orig_xy_u, guess_xy_u, n_grids=64, normalize=True, bounds=bounds)
+                record["jsd_guess_unified_grids64"] = float(jsd_guess_u)
+                record["jsd_guess_unified_grids64_x1000"] = float(jsd_guess_u * 1000.0)
+                print(f"jsd_guess_unified_grids64={jsd_guess_u:.8f}")
+                print(f"jsd_guess_unified_grids64_x1000={jsd_guess_u * 1000.0:.6f}")
+        else:
+            print("jsd_unified: no points to evaluate")
+
     if not args.no_ndtw:
         max_n = args.max_ndtw if args.max_ndtw is not None else B
         max_n = max(1, min(B, int(max_n)))
         ndtw_values = []
         ndtw_guess_values = [] if args.report_guess else None
-        loc_0_cpu = loc_0.detach().cpu()
-        loc_rec_cpu = loc_rec.detach().cpu()
-        loc_guess_cpu = loc_guess.detach().cpu() if args.report_guess else None
+        loc_0_cpu = loc_0_m.detach().cpu()
+        loc_rec_cpu = loc_rec_m.detach().cpu()
+        loc_guess_cpu = loc_guess_m.detach().cpu() if args.report_guess else None
         time_cpu = time.detach().cpu()
         valid_cpu = valid.detach().cpu()
+        unified_cpu = unified_1d.detach().cpu()
         for i in range(max_n):
             vi = valid_cpu[i]
             n = int(vi.sum().item())
@@ -455,6 +609,45 @@ def main() -> None:
                 print(f"ndtw_guess_mean_x1000={arr_g.mean() * 1000.0:.6f}")
         else:
             print("ndtw: no valid trajectories to evaluate")
+
+        # Unified-scope NDTW
+        ndtw_u_values = []
+        ndtw_guess_u_values = [] if args.report_guess else None
+        for i in range(max_n):
+            mi = unified_cpu[i]
+            n = int(mi.sum().item())
+            if n < 2:
+                continue
+            gt = torch.cat([loc_0_cpu[i, :, mi], time_cpu[i, :, mi]], dim=0)  # (3, n)
+            pr = torch.cat([loc_rec_cpu[i, :, mi], time_cpu[i, :, mi]], dim=0)  # (3, n)
+            ndtw_u_values.append(NDTW(gt, pr))
+            if args.report_guess:
+                assert ndtw_guess_u_values is not None and loc_guess_cpu is not None
+                pr_guess = torch.cat([loc_guess_cpu[i, :, mi], time_cpu[i, :, mi]], dim=0)  # (3, n)
+                ndtw_guess_u_values.append(NDTW(gt, pr_guess))
+
+        if ndtw_u_values:
+            arr_u = np.asarray(ndtw_u_values, dtype=np.float64)
+            record["ndtw_unified_mean"] = float(arr_u.mean())
+            record["ndtw_unified_median"] = float(np.median(arr_u))
+            record["ndtw_unified_n"] = int(len(arr_u))
+            record["ndtw_unified_mean_x1000"] = float(arr_u.mean() * 1000.0)
+            print(f"ndtw_unified_mean={arr_u.mean():.6f} ndtw_unified_median={np.median(arr_u):.6f} ndtw_unified_n={len(arr_u)}")
+            print(f"ndtw_unified_mean_x1000={arr_u.mean() * 1000.0:.6f}")
+            if args.report_guess and ndtw_guess_u_values:
+                arr_gu = np.asarray(ndtw_guess_u_values, dtype=np.float64)
+                record["ndtw_guess_unified_mean"] = float(arr_gu.mean())
+                record["ndtw_guess_unified_median"] = float(np.median(arr_gu))
+                record["ndtw_guess_unified_n"] = int(len(arr_gu))
+                record["ndtw_guess_unified_mean_x1000"] = float(arr_gu.mean() * 1000.0)
+                print(
+                    f"ndtw_guess_unified_mean={arr_gu.mean():.6f} "
+                    f"ndtw_guess_unified_median={np.median(arr_gu):.6f} "
+                    f"ndtw_guess_unified_n={len(arr_gu)}"
+                )
+                print(f"ndtw_guess_unified_mean_x1000={arr_gu.mean() * 1000.0:.6f}")
+        else:
+            print("ndtw_unified: no trajectories to evaluate")
 
     if not args.no_record:
         out_path = resolve_path(args.record_path) if args.record_path else default_record_path(ckpt_path, test_file)

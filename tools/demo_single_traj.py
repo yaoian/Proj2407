@@ -90,11 +90,15 @@ def find_latest_ckpt() -> str:
     candidates = []
     runs_dir = os.path.join(PROJECT_ROOT, "Runs")
     for root, _, files in os.walk(runs_dir):
+        if "best_full.pth" in files:
+            candidates.append(os.path.join(root, "best_full.pth"))
         if "best.pth" in files:
             candidates.append(os.path.join(root, "best.pth"))
     if candidates:
         return max(candidates, key=os.path.getmtime)
     for root, _, files in os.walk(runs_dir):
+        if "last_full.pth" in files:
+            candidates.append(os.path.join(root, "last_full.pth"))
         if "last.pth" in files:
             candidates.append(os.path.join(root, "last.pth"))
     if candidates:
@@ -156,6 +160,8 @@ def load_checkpoint(
     ckpt_path: str, device: torch.device, traj_len: int
 ) -> Tuple[torch.nn.Module, torch.nn.Module, Optional[torch.nn.Module]]:
     checkpoint = torch.load(ckpt_path, map_location=device)
+    if isinstance(checkpoint, dict) and "models" in checkpoint and isinstance(checkpoint["models"], dict):
+        checkpoint = checkpoint["models"]
 
     unet_state = {k.replace("_orig_mod.", ""): v for k, v in checkpoint["unet"].items()}
     ckpt_in_c = int(unet_state["pre_embed.weight"].shape[1])
