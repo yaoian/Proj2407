@@ -31,6 +31,7 @@ import os
 import json
 from contextlib import nullcontext
 import time
+import uuid
 
 
 def _l2_norm_of_tensors(tensors) -> float:
@@ -135,12 +136,20 @@ def train():
     # --- Recording and Loading ---
     mov_avg_loss = MovingAverage(mov_avg_interval)
     os.makedirs(save_dir)
-    writer = SummaryWriter(log_dir)
+    # TensorBoard logs are written outside the repo by default to keep Runs/ lightweight.
+    # Pattern: ../../tf-logs/TrajWeaver/{time}_{random}
+    run_stamp = os.path.basename(os.path.normpath(log_dir.rstrip("/")))
+    tb_run_id = uuid.uuid4().hex[:8]
+    tb_base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "tf-logs", "TrajWeaver"))
+    tb_log_dir = os.path.join(tb_base_dir, f"{run_stamp}_{tb_run_id}")
+    os.makedirs(tb_log_dir, exist_ok=True)
+    writer = SummaryWriter(tb_log_dir)
     info_path = os.path.join(log_dir, "info.txt")
     config_path = os.path.join(log_dir, "train_config.json")
     tb_hist_interval = int(os.environ.get("TRACE_TB_HIST_INTERVAL", "500"))
     writer.add_text("run/log_dir", log_dir, 0)
     writer.add_text("run/save_dir", save_dir, 0)
+    writer.add_text("run/tb_log_dir", tb_log_dir, 0)
 
     run_config = {
         "dataset_name": dataset_name,
@@ -158,6 +167,7 @@ def train():
         "freeze_linkage": bool(freeze_linkage),
         "freeze_embedder": bool(freeze_embedder),
         "device": str(device),
+        "tb_log_dir": tb_log_dir,
     }
     with open(config_path, "w", encoding="utf-8") as f:
         json.dump(run_config, f, ensure_ascii=False, indent=2)
