@@ -177,6 +177,7 @@ def render_traj_on_map(
         pixel_points.append(_xy_to_pixel(x_coord, y_coord, map_extent, (width, height), pixel_bbox))
 
     observed_color = (31, 119, 180)
+    observed_point_color = (31, 119, 180)
 
     for idx in range(len(pixel_points) - 1):
         start_point = pixel_points[idx]
@@ -185,6 +186,19 @@ def render_traj_on_map(
             continue
         if not bool(missing_mask[idx].item()) and not bool(missing_mask[idx + 1].item()):
             draw.line([start_point, end_point], fill=observed_color, width=line_width)
+
+    # draw observed points bigger for visibility
+    for idx, point in enumerate(pixel_points):
+        if point is None:
+            continue
+        if bool(missing_mask[idx].item()):
+            continue
+        radius = 4
+        draw.ellipse(
+            [point[0] - radius, point[1] - radius, point[0] + radius, point[1] + radius],
+            outline=observed_point_color,
+            fill=observed_point_color,
+        )
 
     if render_out_path:
         image.save(render_out_path)
@@ -198,51 +212,31 @@ def _format_traj_for_prompt(
     *,
     digits: int = 3,
 ) -> str:
-    lines = ["idx,time,x,y"]
+    lines = ["idx,time,x,y,missing"]
     missing_mask = erase_mask > 0.1
     valid_mask = erase_mask >= 0
     total_len = int(xy_denorm.shape[1])
     for idx in range(total_len):
         if not bool(valid_mask[idx].item()):
             continue
-        if bool(missing_mask[idx].item()):
-            continue
+        missing = int(bool(missing_mask[idx].item()))
         x_val = float(xy_denorm[0, idx].item())
         y_val = float(xy_denorm[1, idx].item())
         time_val = None
         if time_denorm is not None:
             time_val = float(time_denorm[idx].item())
-        x_text = f"{x_val:.{digits}f}"
-        y_text = f"{y_val:.{digits}f}"
+        if missing:
+            x_text = "NA"
+            y_text = "NA"
+        else:
+            x_text = f"{x_val:.{digits}f}"
+            y_text = f"{y_val:.{digits}f}"
         if time_val is None:
             time_text = "NA"
         else:
             time_text = f"{time_val:.{digits}f}"
-        lines.append(f"{idx},{time_text},{x_text},{y_text}")
+        lines.append(f"{idx},{time_text},{x_text},{y_text},{missing}")
     return "\n".join(lines)
-
-
-def _format_missing_indices(
-    erase_mask: torch.Tensor,
-    time_denorm: Optional[torch.Tensor],
-    *,
-    digits: int = 3,
-) -> str:
-    missing_mask = erase_mask > 0.1
-    valid_mask = erase_mask >= 0
-    parts = []
-    total_len = int(erase_mask.shape[0])
-    for idx in range(total_len):
-        if not bool(valid_mask[idx].item()):
-            continue
-        if not bool(missing_mask[idx].item()):
-            continue
-        if time_denorm is not None:
-            t_val = float(time_denorm[idx].item())
-            parts.append(f"{idx}:{t_val:.{digits}f}")
-        else:
-            parts.append(str(idx))
-    return ", ".join(parts) if parts else "None"
 
 
 def build_qwen_prompt(
@@ -254,7 +248,6 @@ def build_qwen_prompt(
 ) -> str:
     x_min, x_max, y_min, y_max = map_extent
     traj_text = _format_traj_for_prompt(xy_denorm, time_denorm, erase_mask)
-    missing_text = _format_missing_indices(erase_mask, time_denorm)
     return (
         "你是一名轨迹修复助手。已给出室内地图与轨迹示意图：\n"
         "- 蓝色实线：观测到的轨迹（只显示可视点）\n"
@@ -263,7 +256,6 @@ def build_qwen_prompt(
         "请根据图像与下方轨迹表，补全所有缺失点，输出 JSON：\n"
         "{\"points\": [[x0, y0], [x1, y1], ...]}，长度必须等于轨迹长度。\n"
         "不要输出除 JSON 外的任何文字。\n\n"
-        f"缺失点索引(含时间): {missing_text}\n\n"
         "轨迹表：\n"
         f"{traj_text}\n"
     )
