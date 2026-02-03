@@ -177,15 +177,23 @@ def render_traj_on_map(
         pixel_points.append(_xy_to_pixel(x_coord, y_coord, map_extent, (width, height), pixel_bbox))
 
     observed_color = (31, 119, 180)
-    observed_point_color = (31, 119, 180)
+    observed_point_color = (220, 20, 60)
+    missing_segment_color = (255, 127, 14)
 
-    for idx in range(len(pixel_points) - 1):
-        start_point = pixel_points[idx]
-        end_point = pixel_points[idx + 1]
-        if start_point is None or end_point is None:
+    last_obs_point: Optional[Tuple[float, float]] = None
+    last_obs_idx: Optional[int] = None
+    for idx, point in enumerate(pixel_points):
+        if point is None:
             continue
-        if not bool(missing_mask[idx].item()) and not bool(missing_mask[idx + 1].item()):
-            draw.line([start_point, end_point], fill=observed_color, width=line_width)
+        if bool(missing_mask[idx].item()):
+            continue
+        if last_obs_point is not None and last_obs_idx is not None:
+            if idx - last_obs_idx == 1:
+                draw.line([last_obs_point, point], fill=observed_color, width=line_width)
+            else:
+                _draw_dashed_line(draw, last_obs_point, point, color=missing_segment_color, width=line_width)
+        last_obs_point = point
+        last_obs_idx = idx
 
     # draw observed points bigger for visibility
     for idx, point in enumerate(pixel_points):
@@ -193,7 +201,7 @@ def render_traj_on_map(
             continue
         if bool(missing_mask[idx].item()):
             continue
-        radius = 4
+        radius = 5
         draw.ellipse(
             [point[0] - radius, point[1] - radius, point[0] + radius, point[1] + radius],
             outline=observed_point_color,
@@ -251,8 +259,11 @@ def build_qwen_prompt(
     return (
         "你是一名轨迹修复助手。已给出室内地图与轨迹示意图：\n"
         "- 蓝色实线：观测到的轨迹（只显示可视点）\n"
+        "- 橙色虚线：缺失点对应的轨迹段\n"
+        "- 红色点：观测到的轨迹点\n"
         "坐标系：x 轴向下递增，y 轴向右递增。\n"
         f"地图范围：x in [{x_min}, {x_max}], y in [{y_min}, {y_max}]。\n"
+        "灰色格子区域为不可通行，请确保补全点落在白色可通行区域内。\n"
         "请根据图像与下方轨迹表，补全所有 missing==1 的点，输出 JSON：\n"
         "{\"points\": [[idx, x0, y0], [idx, x1, y1], ...]} 只输出缺失点。\n"
         "不要输出除 JSON 外的任何文字。\n\n"

@@ -43,6 +43,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--print-fallback", action="store_true", help="Print if Qwen falls back to TimeInterp.")
     parser.add_argument("--test-len", type=int, default=0, help="Use only first N points (0 means full length).")
     parser.add_argument("--test-len-mode", type=str, default="head", choices=["head", "random"])
+    parser.add_argument("--fixed-gap", action="store_true", help="Use fixed gap: 10 observed + 5 missing + 10 observed.")
+    parser.add_argument("--print-traj-idx", action="store_true", help="Print trajectory index for each sample.")
     return parser.parse_args()
 
 
@@ -67,9 +69,20 @@ def load_trajs(cache_path: str) -> List[torch.Tensor]:
     return trajs
 
 
-def build_erase_mask(length: int, erase_rate: float, generator: torch.Generator) -> Optional[torch.Tensor]:
+def build_erase_mask(
+    length: int,
+    erase_rate: float,
+    generator: torch.Generator,
+    fixed_gap: bool = False,
+) -> Optional[torch.Tensor]:
     if length < 2:
         return None
+    if fixed_gap:
+        if length < 25:
+            return None
+        mask = torch.zeros(length, dtype=torch.float32)
+        mask[10:15] = 1.0
+        return mask
     n_remain = length - int(length * erase_rate)
     n_remain = max(2, min(length, n_remain))
     if length <= 2:
@@ -132,7 +145,17 @@ def main() -> int:
 
     for idx in indices:
         traj = trajs[idx]
-        if args.test_len and int(args.test_len) > 0:
+        if args.fixed_gap:
+            target_len = 25
+            if traj.shape[1] < target_len:
+                continue
+            if traj.shape[1] > target_len:
+                if args.test_len_mode == "random":
+                    start = rng.randint(0, int(traj.shape[1]) - target_len)
+                else:
+                    start = 0
+                traj = traj[:, start : start + target_len]
+        elif args.test_len and int(args.test_len) > 0:
             target_len = int(args.test_len)
             if traj.shape[1] > target_len:
                 if args.test_len_mode == "random":
@@ -141,7 +164,7 @@ def main() -> int:
                     start = 0
                 traj = traj[:, start : start + target_len]
         length = int(traj.shape[1])
-        mask = build_erase_mask(length, float(args.erase_rate), torch_gen)
+        mask = build_erase_mask(length, float(args.erase_rate), torch_gen, fixed_gap=args.fixed_gap)
         if mask is None:
             continue
         mse_time = mse_on_missing(guess_traj_time_interp(traj, mask), traj[:2], mask)
@@ -227,6 +250,10 @@ def main() -> int:
             print("QwenVL   MSE (missing): N/A (all failed)")
         if qwen_error:
             print(f"Qwen errors: {qwen_error}")
+    if args.print_traj_idx and last_pair is not None:
+        print(f"TimeInterp traj idx: {last_pair['traj_idx']}")
+        if not args.no_qwen:
+            print(f"QwenVL   traj idx: {last_pair['traj_idx']}")
     if (args.print_last_points > 0 or args.print_all_missing) and last_pair is not None:
         mask = last_pair["mask"]
         missing_idx = (mask > 0.1).nonzero(as_tuple=False).view(-1).tolist()
