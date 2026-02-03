@@ -367,9 +367,11 @@ def train():
 
                 # Output/target magnitude (helps spot scale explosions)
                 writer.add_scalar("Eps/output_tp1_abs_mean", float(output_tp1.detach().abs().mean().item()), global_it)
-                writer.add_scalar("Eps/target_tp1_abs_mean", float(torch.stack(eps_0_to_tp1).detach().abs().mean().item()), global_it)
+                target_tp1_mean = torch.stack([each.detach().abs().mean() for each in eps_0_to_tp1]).mean()
+                writer.add_scalar("Eps/target_tp1_abs_mean", float(target_tp1_mean.item()), global_it)
                 writer.add_scalar("Eps/output_t_abs_mean", float(output_t.detach().abs().mean().item()), global_it)
-                writer.add_scalar("Eps/target_t_abs_mean", float(torch.stack(eps_0_to_t).detach().abs().mean().item()), global_it)
+                target_t_mean = torch.stack([each.detach().abs().mean() for each in eps_0_to_t]).mean()
+                writer.add_scalar("Eps/target_t_abs_mean", float(target_t_mean.item()), global_it)
 
                 # Grad/param norms (trainable only)
                 g_unet = _grad_l2_norm(unet)
