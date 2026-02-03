@@ -19,16 +19,17 @@ from Priors import guess_traj_time_interp, guess_traj_qwen_vl
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Compare priors MSE on missing points.")
     parser.add_argument("--cache", type=str, required=True, help="Path to taxi cache .pth")
-    parser.add_argument("--map", type=str, required=True, help="Path to indoor map image")
+    parser.add_argument("--map", type=str, required=False, help="Path to indoor map image")
     parser.add_argument("--norm-stats", type=str, default="Dataset/Indoor_norm_stats.json")
     parser.add_argument("--num", type=int, default=8, help="Number of trajectories to sample")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--erase-rate", type=float, default=0.5)
     parser.add_argument("--map-extent", type=str, default="0,16,0,30", help="x_min,x_max,y_min,y_max")
-    parser.add_argument("--model-id", type=str, default="Qwen/Qwen3-VL-4B-Instruct")
+    parser.add_argument("--model-id", type=str, default="Qwen/Qwen3-VL-8B-Instruct")
     parser.add_argument("--max-new-tokens", type=int, default=1024)
     parser.add_argument("--device", type=str, default=None)
     parser.add_argument("--render-dir", type=str, default="")
+    parser.add_argument("--no-map", action="store_true", help="Do not send map image to Qwen (text-only).")
     parser.add_argument("--no-qwen", action="store_true")
     parser.add_argument("--print-errors", action="store_true", help="Print Qwen errors / raw outputs when available.")
     parser.add_argument("--save-raw", type=str, default="", help="Save Qwen raw outputs to directory.")
@@ -110,8 +111,11 @@ def mse_on_missing(pred: torch.Tensor, gt: torch.Tensor, mask: torch.Tensor) -> 
 def main() -> int:
     args = parse_args()
     map_extent = parse_extent(args.map_extent)
-    if args.provider == "siliconflow" and args.model_id == "Qwen/Qwen3-VL-4B-Instruct":
-        args.model_id = "Qwen/Qwen3-VL-30B-A3B-Instruct"
+    if not args.no_map and not args.map:
+        print("Missing --map (or set --no-map for text-only testing).")
+        return 1
+    if args.provider == "siliconflow" and args.model_id == "Qwen/Qwen3-VL-8B-Instruct":
+        args.model_id = "Qwen/Qwen3-VL-8B-Instruct"
     trajs = load_trajs(args.cache)
     if not trajs:
         print("No trajectories loaded.")
@@ -123,7 +127,7 @@ def main() -> int:
         indices = rng.sample(indices, args.num)
 
     torch_gen = torch.Generator().manual_seed(int(args.seed))
-    render_dir = args.render_dir.strip()
+    render_dir = "" if args.no_map else args.render_dir.strip()
     if render_dir:
         os.makedirs(render_dir, exist_ok=True)
     raw_dir = args.save_raw.strip()
@@ -135,6 +139,8 @@ def main() -> int:
             import torchvision  # noqa: F401
         except Exception as exc:
             print(f"warn: torchvision not available, Qwen may fail: {exc}")
+
+    map_path = None if args.no_map else args.map
 
     mse_time_total = 0.0
     mse_qwen_total = 0.0
@@ -188,7 +194,7 @@ def main() -> int:
             qwen_out = guess_traj_qwen_vl(
                 traj,
                 mask,
-                args.map,
+                map_path,
                 norm_stats_path=args.norm_stats,
                 map_extent=map_extent,
                 model_id=args.model_id,

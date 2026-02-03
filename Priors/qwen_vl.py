@@ -253,23 +253,28 @@ def build_qwen_prompt(
     *,
     time_denorm: Optional[torch.Tensor] = None,
     map_extent: Sequence[float] = (0.0, 16.0, 0.0, 30.0),
+    use_map: bool = True,
 ) -> str:
     x_min, x_max, y_min, y_max = map_extent
     traj_text = _format_traj_for_prompt(xy_denorm, time_denorm, erase_mask)
-    return (
-        "你是一名轨迹修复助手。已给出室内地图与轨迹示意图：\n"
-        "- 蓝色实线：观测到的轨迹（只显示可视点）\n"
-        "- 橙色虚线：缺失点对应的轨迹段\n"
-        "- 红色点：观测到的轨迹点\n"
-        "坐标系：x 轴向下递增，y 轴向右递增。\n"
-        f"地图范围：x in [{x_min}, {x_max}], y in [{y_min}, {y_max}]。\n"
-        "灰色格子区域为不可通行，请确保补全点落在白色可通行区域内。\n"
-        "请根据图像与下方轨迹表，补全所有 missing==1 的点，输出 JSON：\n"
-        "{\"points\": [[idx, x0, y0], [idx, x1, y1], ...]} 只输出缺失点。\n"
-        "不要输出除 JSON 外的任何文字。\n\n"
-        "轨迹表：\n"
-        f"{traj_text}\n"
-    )
+    lines: List[str] = ["你是一名轨迹修复助手。"]
+    if use_map:
+        lines.append("已给出室内地图与轨迹示意图：")
+        lines.append("- 蓝色实线：观测到的轨迹（只显示可视点）")
+        lines.append("- 橙色虚线：缺失点对应的轨迹段")
+        lines.append("- 红色点：观测到的轨迹点")
+    else:
+        lines.append("未提供地图图像，仅提供轨迹表。")
+    lines.append("坐标系：x 轴向下递增，y 轴向右递增。")
+    lines.append(f"地图范围：x in [{x_min}, {x_max}], y in [{y_min}, {y_max}]。")
+    if use_map:
+        lines.append("灰色格子区域为不可通行，请确保补全点落在白色可通行区域内。")
+        lines.append("请根据图像与下方轨迹表，补全所有 missing==1 的点，输出 JSON：")
+    else:
+        lines.append("请根据轨迹表，补全所有 missing==1 的点，输出 JSON：")
+    lines.append("{\"points\": [[idx, x0, y0], [idx, x1, y1], ...]} 只输出缺失点。")
+    lines.append("不要输出除 JSON 外的任何文字。")
+    return "\n".join(lines) + f"\n\n轨迹表：\n{traj_text}\n"
 
 
 def _run_qwen_vl(
@@ -298,20 +303,35 @@ def _run_qwen_vl(
             model = model.to(device)
         _MODEL_CACHE[cache_key] = (processor, model)
 
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {"type": "image", "image": image},
-                {"type": "text", "text": prompt},
-            ],
-        }
-    ]
-    if hasattr(processor, "apply_chat_template"):
-        prompt_text = processor.apply_chat_template(messages, add_generation_prompt=True)
-        inputs = processor(text=[prompt_text], images=[image], return_tensors="pt")
+    if image is None:
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                ],
+            }
+        ]
+        if hasattr(processor, "apply_chat_template"):
+            prompt_text = processor.apply_chat_template(messages, add_generation_prompt=True)
+            inputs = processor(text=[prompt_text], return_tensors="pt")
+        else:
+            inputs = processor(text=[prompt], return_tensors="pt")
     else:
-        inputs = processor(text=[prompt], images=[image], return_tensors="pt")
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image", "image": image},
+                    {"type": "text", "text": prompt},
+                ],
+            }
+        ]
+        if hasattr(processor, "apply_chat_template"):
+            prompt_text = processor.apply_chat_template(messages, add_generation_prompt=True)
+            inputs = processor(text=[prompt_text], images=[image], return_tensors="pt")
+        else:
+            inputs = processor(text=[prompt], images=[image], return_tensors="pt")
 
     inputs = {key: value.to(model.device) for key, value in inputs.items()}
     generated_ids = model.generate(**inputs, max_new_tokens=max_new_tokens)
@@ -389,16 +409,23 @@ def _run_qwen_vl_siliconflow(
     api_path = api_path if api_path.startswith("/") else f"/{api_path}"
     url = f"{api_base}{api_path}"
 
-    image_b64 = _encode_image_base64(image)
+    if image is None:
+        content = [
+            {"type": "text", "text": prompt},
+        ]
+    else:
+        image_b64 = _encode_image_base64(image)
+        content = [
+            {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_b64}"}},
+            {"type": "text", "text": prompt},
+        ]
+
     payload = {
         "model": model_id,
         "messages": [
             {
                 "role": "user",
-                "content": [
-                    {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{image_b64}"}},
-                    {"type": "text", "text": prompt},
-                ],
+                "content": content,
             }
         ],
         "max_tokens": int(max_new_tokens),
@@ -508,7 +535,7 @@ def _parse_missing_points_from_text(text: str) -> Optional[List[Tuple[int, float
 def guess_traj_qwen_vl(
     traj_0: torch.Tensor,
     erase_mask: torch.Tensor,
-    map_image_path: str,
+    map_image_path: Optional[str],
     *,
     norm_stats_path: str = "Dataset/Indoor_norm_stats.json",
     map_extent: Sequence[float] = (0.0, 16.0, 0.0, 30.0),
@@ -533,19 +560,23 @@ def guess_traj_qwen_vl(
         mean, std = load_norm_stats(norm_stats_path)
         xy_denorm = denorm_xy(traj_0, mean, std)
         time_denorm = traj_0[2] * std[2] + mean[2]
-        rendered = render_traj_on_map(
-            xy_denorm,
-            erase_mask,
-            map_image_path,
-            map_extent=map_extent,
-            render_out_path=render_out_path,
-        )
+        use_map = map_image_path is not None
+        rendered = None
+        if use_map:
+            rendered = render_traj_on_map(
+                xy_denorm,
+                erase_mask,
+                map_image_path,
+                map_extent=map_extent,
+                render_out_path=render_out_path,
+            )
         if prompt is None:
             prompt = build_qwen_prompt(
                 xy_denorm,
                 erase_mask,
                 time_denorm=time_denorm,
                 map_extent=map_extent,
+                use_map=use_map,
             )
         if provider == "local":
             output_text = _run_qwen_vl(
