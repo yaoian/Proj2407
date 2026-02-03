@@ -39,6 +39,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--api-path", type=str, default="/chat/completions")
     parser.add_argument("--api-timeout", type=float, default=60.0)
     parser.add_argument("--print-last-points", type=int, default=0, help="Print last N missing points for Qwen and TimeInterp.")
+    parser.add_argument("--print-all-missing", action="store_true", help="Print all missing points for Qwen and TimeInterp (last traj).")
     parser.add_argument("--print-fallback", action="store_true", help="Print if Qwen falls back to TimeInterp.")
     parser.add_argument("--test-len", type=int, default=0, help="Use only first N points (0 means full length).")
     parser.add_argument("--test-len-mode", type=str, default="head", choices=["head", "random"])
@@ -200,11 +201,16 @@ def main() -> int:
                         f.write(raw_text)
                 if args.print_fallback and isinstance(debug, dict) and debug.get("fallback") == "parse_failed":
                     print(f"[traj {idx}] Qwen fallback: parse_failed")
+                if loc_guess_qwen is None:
+                    qwen_error += 1
+                    if args.print_fallback:
+                        print(f"[traj {idx}] Qwen output missing; skipped.")
             else:
                 loc_guess_qwen = qwen_out
-            mse_qwen = mse_on_missing(loc_guess_qwen, traj[:2], mask)
-            if mse_qwen is not None:
-                mse_qwen_total += mse_qwen
+            if loc_guess_qwen is not None:
+                mse_qwen = mse_on_missing(loc_guess_qwen, traj[:2], mask)
+                if mse_qwen is not None:
+                    mse_qwen_total += mse_qwen
             if last_pair is not None:
                 last_pair["qwen_guess"] = loc_guess_qwen
 
@@ -215,14 +221,18 @@ def main() -> int:
     print(f"Samples: {count}")
     print(f"TimeInterp MSE (missing): {mse_time_total / count:.6f}")
     if not args.no_qwen:
-        print(f"QwenVL   MSE (missing): {mse_qwen_total / count:.6f}")
+        if qwen_error < count:
+            print(f"QwenVL   MSE (missing): {mse_qwen_total / max(1, count - qwen_error):.6f}")
+        else:
+            print("QwenVL   MSE (missing): N/A (all failed)")
         if qwen_error:
             print(f"Qwen errors: {qwen_error}")
-    if args.print_last_points > 0 and last_pair is not None:
+    if (args.print_last_points > 0 or args.print_all_missing) and last_pair is not None:
         mask = last_pair["mask"]
         missing_idx = (mask > 0.1).nonzero(as_tuple=False).view(-1).tolist()
-        n = int(args.print_last_points)
-        missing_idx = missing_idx[-n:] if n > 0 else missing_idx
+        if not args.print_all_missing:
+            n = int(args.print_last_points)
+            missing_idx = missing_idx[-n:] if n > 0 else missing_idx
         print(f"Last traj idx: {last_pair['traj_idx']}")
         print("Missing idx:", missing_idx)
         time_guess = last_pair["time_guess"]

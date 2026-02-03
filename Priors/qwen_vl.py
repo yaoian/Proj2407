@@ -493,7 +493,6 @@ def guess_traj_qwen_vl(
     Qwen3-VL prior for trajectory guessing.
     Input/Output are aligned with TaxiDataset.guessTraj: traj_0 (3,L), erase_mask (L,) -> loc_guess (2,L)
     """
-    baseline_guess = guess_traj_time_interp(traj_0, erase_mask)
     try:
         mean, std = load_norm_stats(norm_stats_path)
         xy_denorm = denorm_xy(traj_0, mean, std)
@@ -540,13 +539,13 @@ def guess_traj_qwen_vl(
             points = _parse_points_from_text(output_text, expected_length)
             if points is None:
                 if return_debug:
-                    return baseline_guess, {
+                    return None, {
                         "rendered": rendered,
                         "prompt": prompt,
                         "raw_text": output_text,
                         "fallback": "parse_failed",
                     }
-                return baseline_guess
+                raise RuntimeError("Qwen output parse failed (missing points).")
             points_tensor = torch.tensor(points, dtype=traj_0.dtype, device=traj_0.device).T  # (2,L)
             loc_guess = normalize_xy(points_tensor, mean, std)
             missing_mask = erase_mask > 0.1
@@ -571,5 +570,5 @@ def guess_traj_qwen_vl(
         return loc_guess
     except Exception as exc:
         if return_debug:
-            return baseline_guess, {"error": str(exc), "fallback": "exception"}
-        return baseline_guess
+            return None, {"error": str(exc), "fallback": "exception"}
+        raise
