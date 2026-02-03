@@ -253,8 +253,8 @@ def build_qwen_prompt(
         "- 蓝色实线：观测到的轨迹（只显示可视点）\n"
         "坐标系：x 轴向下递增，y 轴向右递增。\n"
         f"地图范围：x in [{x_min}, {x_max}], y in [{y_min}, {y_max}]。\n"
-        "请根据图像与下方轨迹表，补全所有缺失点，输出 JSON：\n"
-        "{\"points\": [[x0, y0], [x1, y1], ...]}，请按轨迹表的长度复原。\n"
+        "请根据图像与下方轨迹表，补全所有 missing==1 的点，输出 JSON：\n"
+        "{\"points\": [[idx, x0, y0], [idx, x1, y1], ...]} 只输出缺失点。\n"
         "不要输出除 JSON 外的任何文字。\n\n"
         "轨迹表：\n"
         f"{traj_text}\n"
@@ -426,6 +426,49 @@ def _parse_points_from_text(text: str, expected_length: int) -> Optional[List[Tu
     return parsed
 
 
+def _parse_missing_points_from_text(text: str) -> Optional[List[Tuple[int, float, float]]]:
+    text = text.strip()
+    json_text = None
+    if text.startswith("{") and text.endswith("}"):
+        json_text = text
+    elif text.startswith("[") and text.endswith("]"):
+        json_text = text
+    else:
+        start_idx = text.find("{")
+        end_idx = text.rfind("}")
+        if start_idx >= 0 and end_idx > start_idx:
+            json_text = text[start_idx : end_idx + 1]
+    points = None
+    if json_text is not None:
+        try:
+            data = json.loads(json_text)
+            if isinstance(data, dict):
+                data = data.get("points")
+            if isinstance(data, list):
+                points = data
+        except Exception:
+            points = None
+    if points is None:
+        number_list = re.findall(r"[-+]?(?:\\d*\\.\\d+|\\d+)(?:[eE][-+]?\\d+)?", text)
+        if len(number_list) >= 3 and len(number_list) % 3 == 0:
+            values = [float(item) for item in number_list]
+            points = [[values[idx], values[idx + 1], values[idx + 2]] for idx in range(0, len(values), 3)]
+    if not isinstance(points, list):
+        return None
+    parsed: List[Tuple[int, float, float]] = []
+    for item in points:
+        if not (isinstance(item, list) or isinstance(item, tuple)) or len(item) < 3:
+            return None
+        try:
+            idx_val = int(round(float(item[0])))
+            x_val = float(item[1])
+            y_val = float(item[2])
+        except Exception:
+            return None
+        parsed.append((idx_val, x_val, y_val))
+    return parsed
+
+
 def guess_traj_qwen_vl(
     traj_0: torch.Tensor,
     erase_mask: torch.Tensor,
@@ -434,7 +477,7 @@ def guess_traj_qwen_vl(
     norm_stats_path: str = "Dataset/Indoor_norm_stats.json",
     map_extent: Sequence[float] = (0.0, 16.0, 0.0, 30.0),
     prompt: Optional[str] = None,
-    model_id: str = "Qwen/Qwen3-VL-4B-Instruct",
+    model_id: str = "Qwen/Qwen3-VL-8B-Instruct",
     max_new_tokens: int = 1024,
     device: Optional[str] = None,
     force_download: bool = False,
@@ -492,20 +535,31 @@ def guess_traj_qwen_vl(
         else:
             raise RuntimeError(f"Unknown provider: {provider}")
         expected_length = int(traj_0.shape[1])
-        points = _parse_points_from_text(output_text, expected_length)
-        if points is None:
-            if return_debug:
-                return baseline_guess, {
-                    "rendered": rendered,
-                    "prompt": prompt,
-                    "raw_text": output_text,
-                    "fallback": "parse_failed",
-                }
-            return baseline_guess
-        points_tensor = torch.tensor(points, dtype=traj_0.dtype, device=traj_0.device).T  # (2,L)
-        loc_guess = normalize_xy(points_tensor, mean, std)
-        missing_mask = erase_mask > 0.1
-        loc_guess[:, ~missing_mask] = traj_0[:2, ~missing_mask]
+        missing_points = _parse_missing_points_from_text(output_text)
+        if missing_points is None:
+            points = _parse_points_from_text(output_text, expected_length)
+            if points is None:
+                if return_debug:
+                    return baseline_guess, {
+                        "rendered": rendered,
+                        "prompt": prompt,
+                        "raw_text": output_text,
+                        "fallback": "parse_failed",
+                    }
+                return baseline_guess
+            points_tensor = torch.tensor(points, dtype=traj_0.dtype, device=traj_0.device).T  # (2,L)
+            loc_guess = normalize_xy(points_tensor, mean, std)
+            missing_mask = erase_mask > 0.1
+            loc_guess[:, ~missing_mask] = traj_0[:2, ~missing_mask]
+        else:
+            loc_guess = traj_0[:2].clone()
+            missing_mask = erase_mask > 0.1
+            mean_x, mean_y = float(mean[0]), float(mean[1])
+            std_x, std_y = float(std[0]), float(std[1])
+            for idx_val, x_val, y_val in missing_points:
+                if 0 <= idx_val < expected_length and bool(missing_mask[idx_val].item()):
+                    loc_guess[0, idx_val] = (x_val - mean_x) / std_x
+                    loc_guess[1, idx_val] = (y_val - mean_y) / std_y
 
         invalid_mask = erase_mask < 0
         if torch.any(invalid_mask):
