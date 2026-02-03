@@ -254,7 +254,7 @@ def build_qwen_prompt(
         "坐标系：x 轴向下递增，y 轴向右递增。\n"
         f"地图范围：x in [{x_min}, {x_max}], y in [{y_min}, {y_max}]。\n"
         "请根据图像与下方轨迹表，补全所有缺失点，输出 JSON：\n"
-        "{\"points\": [[x0, y0], [x1, y1], ...]}，长度必须等于轨迹长度。\n"
+        "{\"points\": [[x0, y0], [x1, y1], ...]}，请按轨迹表的长度复原。\n"
         "不要输出除 JSON 外的任何文字。\n\n"
         "轨迹表：\n"
         f"{traj_text}\n"
