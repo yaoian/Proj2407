@@ -191,7 +191,7 @@ def render_traj_on_map(
             if idx - last_obs_idx == 1:
                 draw.line([last_obs_point, point], fill=observed_color, width=line_width)
             else:
-                _draw_dashed_line(draw, last_obs_point, point, color=missing_segment_color, width=line_width)
+                _draw_dashed_line(draw, last_obs_point, point, fill=missing_segment_color, width=line_width)
         last_obs_point = point
         last_obs_idx = idx
 
