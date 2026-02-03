@@ -31,6 +31,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--render-dir", type=str, default="")
     parser.add_argument("--no-qwen", action="store_true")
     parser.add_argument("--print-errors", action="store_true", help="Print Qwen errors / raw outputs when available.")
+    parser.add_argument("--save-raw", type=str, default="", help="Save Qwen raw outputs to directory.")
     parser.add_argument("--force-download", action="store_true", help="Force redownload model files.")
     parser.add_argument("--provider", type=str, default="local", choices=["local", "siliconflow"])
     parser.add_argument("--api-base", type=str, default="")
@@ -111,6 +112,9 @@ def main() -> int:
     render_dir = args.render_dir.strip()
     if render_dir:
         os.makedirs(render_dir, exist_ok=True)
+    raw_dir = args.save_raw.strip()
+    if raw_dir:
+        os.makedirs(raw_dir, exist_ok=True)
 
     if not args.no_qwen and args.provider == "local":
         try:
@@ -189,6 +193,11 @@ def main() -> int:
                     raw_text = debug.get("raw_text", "")
                     raw_text = raw_text if len(raw_text) <= 400 else raw_text[:400] + "..."
                     print(f"[traj {idx}] Qwen raw_text: {raw_text}")
+                if isinstance(debug, dict) and "raw_text" in debug and raw_dir:
+                    raw_text = debug.get("raw_text", "")
+                    raw_path = os.path.join(raw_dir, f"traj_{idx}.txt")
+                    with open(raw_path, "w", encoding="utf-8") as f:
+                        f.write(raw_text)
                 if args.print_fallback and isinstance(debug, dict) and debug.get("fallback") == "parse_failed":
                     print(f"[traj {idx}] Qwen fallback: parse_failed")
             else:
