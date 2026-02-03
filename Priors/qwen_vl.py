@@ -229,8 +229,8 @@ def _format_traj_for_prompt(
             x_text = "NA"
             y_text = "NA"
         else:
-            x_text = f"{x_val:.{digits}f}"
-            y_text = f"{y_val:.{digits}f}"
+            x_text = str(int(round(x_val)))
+            y_text = str(int(round(y_val)))
         if time_val is None:
             time_text = "NA"
         else:
