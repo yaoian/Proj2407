@@ -177,7 +177,6 @@ def render_traj_on_map(
         pixel_points.append(_xy_to_pixel(x_coord, y_coord, map_extent, (width, height), pixel_bbox))
 
     observed_color = (31, 119, 180)
-    missing_color = (255, 127, 14)
     missing_point_color = (214, 39, 40)
 
     for idx in range(len(pixel_points) - 1):
@@ -185,16 +184,14 @@ def render_traj_on_map(
         end_point = pixel_points[idx + 1]
         if start_point is None or end_point is None:
             continue
-        if bool(missing_mask[idx].item()) or bool(missing_mask[idx + 1].item()):
-            _draw_dashed_line(draw, start_point, end_point, fill=missing_color, width=line_width)
-        else:
+        if not bool(missing_mask[idx].item()) and not bool(missing_mask[idx + 1].item()):
             draw.line([start_point, end_point], fill=observed_color, width=line_width)
 
     for idx, point in enumerate(pixel_points):
         if point is None:
             continue
         if bool(missing_mask[idx].item()):
-            radius = 3
+            radius = 5
             draw.ellipse(
                 [point[0] - radius, point[1] - radius, point[0] + radius, point[1] + radius],
                 outline=missing_point_color,
