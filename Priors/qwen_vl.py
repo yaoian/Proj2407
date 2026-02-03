@@ -55,16 +55,75 @@ def _xy_to_pixel(
     y_coord: float,
     map_extent: Sequence[float],
     image_size: Tuple[int, int],
+    pixel_bbox: Optional[Tuple[int, int, int, int]] = None,
 ) -> Tuple[float, float]:
     x_min, x_max, y_min, y_max = map_extent
     width, height = image_size
+    left, top, right, bottom = 0, 0, width - 1, height - 1
+    if pixel_bbox is not None:
+        left, top, right, bottom = pixel_bbox
+        width = right - left + 1
+        height = bottom - top + 1
     if x_max == x_min or y_max == y_min:
         raise ValueError("Invalid map_extent with zero range.")
-    pixel_x = (y_coord - y_min) / (y_max - y_min) * (width - 1)
-    pixel_y = (x_coord - x_min) / (x_max - x_min) * (height - 1)
-    pixel_x = max(0.0, min(float(width - 1), float(pixel_x)))
-    pixel_y = max(0.0, min(float(height - 1), float(pixel_y)))
+    pixel_x = left + (y_coord - y_min) / (y_max - y_min) * (width - 1)
+    pixel_y = top + (x_coord - x_min) / (x_max - x_min) * (height - 1)
+    pixel_x = max(float(left), min(float(right), float(pixel_x)))
+    pixel_y = max(float(top), min(float(bottom), float(pixel_y)))
     return pixel_x, pixel_y
+
+
+def _detect_grid_bbox(image, *, border_tol: int = 10, ratio_threshold: float = 0.9) -> Optional[Tuple[int, int, int, int]]:
+    width, height = image.size
+    pixels = image.load()
+    border_color = pixels[0, 0]
+
+    def is_border_color(color) -> bool:
+        return max(abs(int(color[i]) - int(border_color[i])) for i in range(3)) <= border_tol
+
+    top = 0
+    for y in range(height):
+        count = 0
+        for x in range(width):
+            if is_border_color(pixels[x, y]):
+                count += 1
+        if count / float(width) < ratio_threshold:
+            top = y
+            break
+
+    bottom = height - 1
+    for y in range(height - 1, -1, -1):
+        count = 0
+        for x in range(width):
+            if is_border_color(pixels[x, y]):
+                count += 1
+        if count / float(width) < ratio_threshold:
+            bottom = y
+            break
+
+    left = 0
+    for x in range(width):
+        count = 0
+        for y in range(height):
+            if is_border_color(pixels[x, y]):
+                count += 1
+        if count / float(height) < ratio_threshold:
+            left = x
+            break
+
+    right = width - 1
+    for x in range(width - 1, -1, -1):
+        count = 0
+        for y in range(height):
+            if is_border_color(pixels[x, y]):
+                count += 1
+        if count / float(height) < ratio_threshold:
+            right = x
+            break
+
+    if right <= left or bottom <= top:
+        return None
+    return left, top, right, bottom
 
 
 def _draw_dashed_line(draw, start_point: Tuple[float, float], end_point: Tuple[float, float], *, fill, width: int) -> None:
@@ -100,6 +159,7 @@ def render_traj_on_map(
     image = Image.open(map_image_path).convert("RGB")
     draw = ImageDraw.Draw(image)
     width, height = image.size
+    pixel_bbox = _detect_grid_bbox(image)
 
     valid_mask = erase_mask >= 0
     missing_mask = erase_mask > 0.1
@@ -114,7 +174,7 @@ def render_traj_on_map(
         if not (math.isfinite(x_coord) and math.isfinite(y_coord)):
             pixel_points.append(None)
             continue
-        pixel_points.append(_xy_to_pixel(x_coord, y_coord, map_extent, (width, height)))
+        pixel_points.append(_xy_to_pixel(x_coord, y_coord, map_extent, (width, height), pixel_bbox))
 
     observed_color = (31, 119, 180)
     missing_color = (255, 127, 14)
