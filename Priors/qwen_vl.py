@@ -314,6 +314,31 @@ def _encode_image_base64(image) -> str:
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
 
+def _extract_json_objects(text: str) -> List[dict]:
+    objects: List[dict] = []
+    depth = 0
+    start = None
+    for idx, ch in enumerate(text):
+        if ch == "{":
+            if depth == 0:
+                start = idx
+            depth += 1
+        elif ch == "}":
+            if depth == 0:
+                continue
+            depth -= 1
+            if depth == 0 and start is not None:
+                blob = text[start : idx + 1]
+                try:
+                    obj = json.loads(blob)
+                    if isinstance(obj, dict):
+                        objects.append(obj)
+                except Exception:
+                    pass
+                start = None
+    return objects
+
+
 def _parse_openai_content(message_content) -> str:
     if isinstance(message_content, str):
         return message_content
@@ -384,26 +409,26 @@ def _run_qwen_vl_siliconflow(
 
 def _parse_points_from_text(text: str, expected_length: int) -> Optional[List[Tuple[float, float]]]:
     text = text.strip()
-    json_text = None
-    if text.startswith("{") and text.endswith("}"):
-        json_text = text
-    elif text.startswith("[") and text.endswith("]"):
-        json_text = text
-    else:
-        start_idx = text.find("{")
-        end_idx = text.rfind("}")
-        if start_idx >= 0 and end_idx > start_idx:
-            json_text = text[start_idx : end_idx + 1]
     points = None
-    if json_text is not None:
+
+    fenced = re.findall(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.S)
+    for block in reversed(fenced):
         try:
-            data = json.loads(json_text)
+            data = json.loads(block)
             if isinstance(data, dict):
                 data = data.get("points")
             if isinstance(data, list):
                 points = data
+                break
         except Exception:
-            points = None
+            continue
+
+    if points is None:
+        objects = _extract_json_objects(text)
+        for obj in reversed(objects):
+            if isinstance(obj, dict) and isinstance(obj.get("points"), list):
+                points = obj.get("points")
+                break
     if points is None:
         number_list = re.findall(r"[-+]?(?:\\d*\\.\\d+|\\d+)(?:[eE][-+]?\\d+)?", text)
         if len(number_list) >= expected_length * 2:
@@ -428,26 +453,26 @@ def _parse_points_from_text(text: str, expected_length: int) -> Optional[List[Tu
 
 def _parse_missing_points_from_text(text: str) -> Optional[List[Tuple[int, float, float]]]:
     text = text.strip()
-    json_text = None
-    if text.startswith("{") and text.endswith("}"):
-        json_text = text
-    elif text.startswith("[") and text.endswith("]"):
-        json_text = text
-    else:
-        start_idx = text.find("{")
-        end_idx = text.rfind("}")
-        if start_idx >= 0 and end_idx > start_idx:
-            json_text = text[start_idx : end_idx + 1]
     points = None
-    if json_text is not None:
+
+    fenced = re.findall(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.S)
+    for block in reversed(fenced):
         try:
-            data = json.loads(json_text)
+            data = json.loads(block)
             if isinstance(data, dict):
                 data = data.get("points")
             if isinstance(data, list):
                 points = data
+                break
         except Exception:
-            points = None
+            continue
+
+    if points is None:
+        objects = _extract_json_objects(text)
+        for obj in reversed(objects):
+            if isinstance(obj, dict) and isinstance(obj.get("points"), list):
+                points = obj.get("points")
+                break
     if points is None:
         number_list = re.findall(r"[-+]?(?:\\d*\\.\\d+|\\d+)(?:[eE][-+]?\\d+)?", text)
         if len(number_list) >= 3 and len(number_list) % 3 == 0:
